@@ -468,19 +468,20 @@ with st.sidebar:
         if st.button("Today",      use_container_width=True):
             st.session_state["di_start"] = today
             st.session_state["di_end"]   = today
-        if st.button("Last 7d",    use_container_width=True):
-            st.session_state["di_start"] = today - timedelta(days=7)
-            st.session_state["di_end"]   = today - timedelta(days=1)
+        if st.button("This Week",  use_container_width=True):
+            st.session_state["di_start"] = today - timedelta(days=today.weekday())
+            st.session_state["di_end"]   = today
         if st.button("This Month", use_container_width=True):
             st.session_state["di_start"] = date(today.year, today.month, 1)
             st.session_state["di_end"]   = today
     with c2:
-        if st.button("This Week",  use_container_width=True):
-            st.session_state["di_start"] = today - timedelta(days=today.weekday())
-            st.session_state["di_end"]   = today
-        if st.button("Last 30d",   use_container_width=True):
-            st.session_state["di_start"] = today - timedelta(days=30)
+        if st.button("Yesterday",  use_container_width=True):
+            st.session_state["di_start"] = today - timedelta(days=1)
             st.session_state["di_end"]   = today - timedelta(days=1)
+        if st.button("Last Week",  use_container_width=True):
+            last_monday = today - timedelta(days=today.weekday() + 7)
+            st.session_state["di_start"] = last_monday
+            st.session_state["di_end"]   = last_monday + timedelta(days=4)
         if st.button("Last Month", use_container_width=True):
             first = date(today.year, today.month, 1)
             prev  = first - timedelta(days=1)
