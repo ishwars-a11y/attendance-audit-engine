@@ -193,6 +193,18 @@ class JibbleClient:
                 first_clock_in is not None and daily.get(TS_LAST_OUT) is None
             )
 
+            # Fallback: if Jibble omits firstInTimestamp (e.g. manually-entered sessions)
+            # but we have a clock-out and hours, derive clock-in = last_clock_out − hours_logged.
+            # Exact for single-session days; slightly off when breaks exist.
+            if first_clock_in is None and last_clock_out is not None and hours_logged > 0:
+                from datetime import datetime, timedelta
+                try:
+                    lo = datetime.fromisoformat(last_clock_out.replace("Z", "+00:00"))
+                    first_clock_in = (lo - timedelta(hours=hours_logged)).isoformat()
+                    logger.debug(f"  {member_id}: first_clock_in derived from lastOut − hours")
+                except Exception:
+                    pass
+
             # Leave / holiday from embedded timeOff section
             time_off   = daily.get(TS_TIME_OFF, {})
             is_holiday = bool(time_off.get(TS_HOLIDAYS))
