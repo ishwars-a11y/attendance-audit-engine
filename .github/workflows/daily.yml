@@ -23,7 +23,8 @@ jobs:
 
       - name: Run attendance engine
         env:
-          JIBBLE_API_KEY: ${{ secrets.JIBBLE_API_KEY }}
+          JIBBLE_CLIENT_ID: ${{ secrets.JIBBLE_CLIENT_ID }}
+          JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python main.py
