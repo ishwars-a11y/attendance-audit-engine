@@ -266,7 +266,7 @@ def main():
             current += timedelta(days=1)
         return
 
-    target = date.fromisoformat(args.date) if args.date else date.today() - timedelta(days=1)
+    target = date.fromisoformat(args.date) if args.date else date.today()
     run_for_date(target)
 
 
