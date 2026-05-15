@@ -1,0 +1,29 @@
+name: Daily Attendance Audit
+
+on:
+  schedule:
+    # 5:30 PM UTC = 11:00 PM IST, Monday–Friday
+    - cron: "30 17 * * 1-5"
+  workflow_dispatch:  # allows manual trigger from GitHub Actions UI
+
+jobs:
+  run-engine:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run attendance engine
+        env:
+          JIBBLE_API_KEY: ${{ secrets.JIBBLE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python main.py
