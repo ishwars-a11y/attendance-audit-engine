@@ -114,6 +114,32 @@ def anomaly_exists(member_id: str, anomaly_date: date, anomaly_type: str) -> boo
     return len(res.data) > 0
 
 
+def get_snapshot(member_id: str, snapshot_date: date) -> dict:
+    res = (
+        get_client()
+        .table("daily_snapshots")
+        .select("hours_logged, leave_type")
+        .eq("member_id", member_id)
+        .eq("snapshot_date", snapshot_date.isoformat())
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else {}
+
+
+def get_week_anomaly_types(member_id: str, week_start: date, week_end: date) -> list[str]:
+    res = (
+        get_client()
+        .table("anomalies")
+        .select("anomaly_type")
+        .eq("member_id", member_id)
+        .gte("anomaly_date", week_start.isoformat())
+        .lte("anomaly_date", week_end.isoformat())
+        .execute()
+    )
+    return [r["anomaly_type"] for r in res.data]
+
+
 # ---------------------------------------------------------------------------
 # Admin edits
 # ---------------------------------------------------------------------------

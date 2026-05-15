@@ -4,10 +4,14 @@ import pytz
 # If probe output shows UTC timestamps, set JIBBLE_TIMESTAMPS_UTC = True in .env.
 IST = pytz.timezone("Asia/Kolkata")
 
-WORK_WINDOW_START_HOUR = 11    # 11:00 AM IST — full-timers only
-EXCESSIVE_HOURS_THRESHOLD = 10  # hours/day before flagging
-EXCESSIVE_SESSIONS_THRESHOLD = 4  # clock-in/clock-out pairs before flagging
-AT_RISK_BUFFER_HRS = 4          # hours below effective target → "At Risk" (not "Deficit")
+WORK_WINDOW_START_HOUR   = 11   # 11 AM IST — full-timers only
+WORK_WINDOW_START_MINUTE = 10   # 10-min leeway → flags at 11:10 AM
+EARLY_DEPARTURE_HOUR     = 18   # 6 PM IST — clock-out before this + short hours = early departure
+MAX_BREAK_HOURS          = 2.0  # total break time (span − worked) before flagging
+EXCESSIVE_HOURS_THRESHOLD    = 10  # hours/day before flagging
+EXCESSIVE_SESSIONS_THRESHOLD = 4   # clock-in/clock-out pairs before flagging
+AT_RISK_BUFFER_HRS       = 4    # hours below effective target → "At Risk" (not "Deficit")
+CHRONIC_LATE_THRESHOLD   = 3    # Late/No Start flags in one week → Chronic Late Starter
 
 # Employee roster — keyed by Jibble name (exact string from /v1/people response).
 # member_id: fill in the values after running: python main.py --probe

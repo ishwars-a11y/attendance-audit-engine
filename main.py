@@ -69,7 +69,8 @@ def run_for_date(target_date: date):
         leave_type           = ts.get("leave_type")
         is_holiday           = ts.get("is_holiday", False)
 
-        first_clock_in_dt = _parse_utc(first_clock_in_str)
+        first_clock_in_dt  = _parse_utc(first_clock_in_str)
+        last_clock_out_dt  = _parse_utc(last_clock_out_str)
 
         db.upsert_snapshot({
             "member_id":      mid,
@@ -83,14 +84,28 @@ def run_for_date(target_date: date):
         })
 
         is_full_time       = emp["employment_type"] == "full_time"
+        daily_target_hrs   = emp.get("daily_target_hrs", 8)
         has_leave          = leave_type is not None and not is_holiday
         has_full_day_leave = has_leave    # half-day AM not yet detectable; conservative default
         has_am_half_day    = False        # update if Jibble exposes half-day type
+
+        # Consecutive absence: look up the previous working day's snapshot
+        prev_day = target_date - timedelta(days=1)
+        while prev_day.weekday() >= 5:
+            prev_day -= timedelta(days=1)
+        prev_snap        = db.get_snapshot(mid, prev_day)
+        is_absent_today  = hours_logged == 0 and not has_leave and not is_holiday
+        was_absent_prev  = (
+            float(prev_snap.get("hours_logged", 0)) == 0
+            and prev_snap.get("leave_type") is None
+        )
 
         _flag(mid, target_date, "Missing Clock-Out",
               *rules.check_missing_clockout(has_missing_clockout, first_clock_in_dt))
         _flag(mid, target_date, "Unexcused Absence",
               *rules.check_unexcused_absence(hours_logged, has_leave, is_holiday))
+        _flag(mid, target_date, "Consecutive Absence",
+              *rules.check_consecutive_absence(is_absent_today, was_absent_prev))
         _flag(mid, target_date, "Excessive Hours",
               *rules.check_excessive_hours(hours_logged, is_full_time))
         _flag(mid, target_date, "Excessive Breaks",
@@ -99,6 +114,13 @@ def run_for_date(target_date: date):
               *rules.check_late_no_start(
                   first_clock_in_dt, hours_logged,
                   has_full_day_leave, has_am_half_day, is_full_time))
+        _flag(mid, target_date, "Early Departure",
+              *rules.check_early_departure(
+                  last_clock_out_dt, hours_logged, daily_target_hrs,
+                  has_full_day_leave, is_full_time))
+        _flag(mid, target_date, "Long Breaks",
+              *rules.check_long_breaks(
+                  first_clock_in_dt, last_clock_out_dt, hours_logged, is_full_time))
 
     # --- Weekly summary on Fridays ---
     if target_date.weekday() == 4:
@@ -160,6 +182,13 @@ def _run_weekly_summary(friday: date, employees: list[dict]):
 
         _flag(mid, friday, "Weekly Deficit",
               *rules.check_weekly_deficit(total_hours, effective_target))
+
+        late_count = sum(
+            1 for t in db.get_week_anomaly_types(mid, monday, friday)
+            if t == "Late / No Start"
+        )
+        _flag(mid, friday, "Chronic Late Starter",
+              *rules.check_chronic_late(late_count))
 
 
 def sync_employees():

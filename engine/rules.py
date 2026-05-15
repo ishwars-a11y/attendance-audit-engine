@@ -5,17 +5,23 @@ All functions return a (flagged: bool, detail: str) tuple.
 detail is the human-readable string shown in the dashboard's "Detail" column.
 """
 
-from datetime import datetime, time
+from datetime import datetime, time as time_type
 from typing import Optional
 import pytz
 
 from config import (
     IST,
     WORK_WINDOW_START_HOUR,
+    WORK_WINDOW_START_MINUTE,
+    EARLY_DEPARTURE_HOUR,
+    MAX_BREAK_HOURS,
     EXCESSIVE_HOURS_THRESHOLD,
     EXCESSIVE_SESSIONS_THRESHOLD,
     AT_RISK_BUFFER_HRS,
+    CHRONIC_LATE_THRESHOLD,
 )
+
+_LATE_CUTOFF = time_type(WORK_WINDOW_START_HOUR, WORK_WINDOW_START_MINUTE)
 
 
 # ---------------------------------------------------------------------------
@@ -67,29 +73,70 @@ def check_late_no_start(
     has_am_half_day_leave: bool,
     is_full_time: bool,
 ) -> tuple[bool, str]:
-    """
-    Flag if no clock-in before 11 AM and no approved leave.
-    Half-day AM leave suppresses this flag (employee legitimately starts later).
-    """
+    """Flag if first clock-in is at or after 11:10 AM IST and no approved leave."""
     if not is_full_time:
         return False, ""
     if has_full_day_leave or has_am_half_day_leave:
         return False, ""
     if hours_logged == 0:
-        # Already flagged as Unexcused Absence — don't double-flag
         return False, ""
-
     if first_clock_in is None:
         return True, "No clock-in recorded"
 
     clock_in_ist = first_clock_in.astimezone(IST)
-    if clock_in_ist.hour >= WORK_WINDOW_START_HOUR:
+    if clock_in_ist.time() >= _LATE_CUTOFF:
         return True, f"First clock-in at {_fmt(first_clock_in)} IST"
     return False, ""
 
 
+def check_early_departure(
+    last_clock_out: Optional[datetime],
+    hours_logged: float,
+    daily_target_hrs: float,
+    has_full_day_leave: bool,
+    is_full_time: bool,
+) -> tuple[bool, str]:
+    """Flag if clocked out before 6 PM IST and didn't log enough hours."""
+    if not is_full_time or has_full_day_leave or hours_logged == 0:
+        return False, ""
+    if last_clock_out is None:
+        return False, ""
+    checkout_ist = last_clock_out.astimezone(IST)
+    if checkout_ist.hour < EARLY_DEPARTURE_HOUR and hours_logged < daily_target_hrs - 0.5:
+        return True, f"Clocked out at {_fmt(last_clock_out)} IST with {hours_logged:.1f} hrs logged"
+    return False, ""
+
+
+def check_long_breaks(
+    first_clock_in: Optional[datetime],
+    last_clock_out: Optional[datetime],
+    hours_logged: float,
+    is_full_time: bool,
+) -> tuple[bool, str]:
+    """Flag if total break time (span − worked) exceeds MAX_BREAK_HOURS."""
+    if not is_full_time or hours_logged == 0:
+        return False, ""
+    if first_clock_in is None or last_clock_out is None:
+        return False, ""
+    span = (last_clock_out - first_clock_in).total_seconds() / 3600
+    break_hours = span - hours_logged
+    if break_hours > MAX_BREAK_HOURS:
+        return True, f"{break_hours:.1f} hrs in breaks (span {span:.1f} hrs, worked {hours_logged:.1f} hrs)"
+    return False, ""
+
+
+def check_consecutive_absence(
+    is_absent_today: bool,
+    was_absent_yesterday: bool,
+) -> tuple[bool, str]:
+    """Flag if employee had zero hours with no leave for 2 consecutive working days."""
+    if is_absent_today and was_absent_yesterday:
+        return True, "Zero hours logged for 2 consecutive working days"
+    return False, ""
+
+
 # ---------------------------------------------------------------------------
-# Weekly anomaly
+# Weekly anomalies
 # ---------------------------------------------------------------------------
 
 def check_weekly_deficit(
@@ -99,6 +146,13 @@ def check_weekly_deficit(
     if total_hours < effective_target:
         deficit = effective_target - total_hours
         return True, f"{total_hours:.1f} hrs logged, {deficit:.1f} hrs short"
+    return False, ""
+
+
+def check_chronic_late(late_count: int) -> tuple[bool, str]:
+    """Flag if employee had 3+ Late/No Start anomalies in a single week."""
+    if late_count >= CHRONIC_LATE_THRESHOLD:
+        return True, f"Late / No Start flagged {late_count} times this week"
     return False, ""
 
 
@@ -120,11 +174,6 @@ def weekly_status(total_hours: float, effective_target: float) -> str:
 # ---------------------------------------------------------------------------
 
 def weekly_trend(hours_this_week: float, hours_last_week: float) -> str:
-    """
-    Up / Down / Stable.
-    Threshold: more than 2 hours difference = Up or Down.
-    Less than or equal to 2 hours = Stable.
-    """
     delta = hours_this_week - hours_last_week
     if delta > 2:
         return "Up"
