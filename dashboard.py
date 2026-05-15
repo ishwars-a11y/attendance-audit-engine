@@ -14,6 +14,15 @@ from supabase import create_client
 
 load_dotenv()
 
+
+def _secret(key: str) -> str:
+    """Read from st.secrets (Streamlit Cloud) or fall back to environment variable."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.environ[key]
+
+
 st.set_page_config(
     page_title="Attendance Dashboard",
     page_icon="📋",
@@ -26,10 +35,7 @@ st.set_page_config(
 
 @st.cache_resource
 def get_supabase():
-    return create_client(
-        os.environ["SUPABASE_URL"],
-        os.environ["SUPABASE_SERVICE_KEY"],
-    )
+    return create_client(_secret("SUPABASE_URL"), _secret("SUPABASE_SERVICE_KEY"))
 
 sb = get_supabase()
 
