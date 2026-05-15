@@ -312,6 +312,24 @@ def load_anomaly_summary(start: str, end: str) -> pd.DataFrame:
     )
 
 # ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+
+def _fmt_hrs(h) -> str:
+    """Convert decimal hours to 'Xh Ym' string."""
+    try:
+        h = float(h)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(h):
+        return "—"
+    total_min = round(abs(h) * 60)
+    hrs  = total_min // 60
+    mins = total_min % 60
+    return f"{hrs}h {mins}m"
+
+
+# ---------------------------------------------------------------------------
 # Styling
 # ---------------------------------------------------------------------------
 
@@ -404,11 +422,11 @@ with tab1:
         else:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Employees tracked", len(df))
-            c2.metric("Avg hours",         f"{df['Hours'].mean():.1f}")
-            c3.metric("Avg break hrs",     f"{df['Break Hrs'].mean():.1f}")
+            c2.metric("Avg hours",         _fmt_hrs(df["Hours"].mean()))
+            c3.metric("Avg break hrs",     _fmt_hrs(df["Break Hrs"].mean()))
             c4.metric("On leave",          int((df["Leave"] != "").sum()))
             st.dataframe(
-                df.style.format({"Hours": "{:.2f}", "Break Hrs": "{:.2f}"}),
+                df.style.format({"Hours": _fmt_hrs, "Break Hrs": _fmt_hrs}),
                 use_container_width=True, hide_index=True,
             )
 
@@ -432,7 +450,7 @@ with tab2:
             c2.metric("At Risk",  int((df["Status"] == "At Risk").sum()))
             c3.metric("Deficit",  int((df["Status"] == "Deficit").sum()))
             styled = df.style.map(_color_status, subset=["Status"]).format(
-                {"Hours": "{:.1f}", "Target": "{:.1f}", "Projected": "{:.1f}"}
+                {"Hours": _fmt_hrs, "Target": _fmt_hrs, "Projected": _fmt_hrs}
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
     else:
@@ -456,7 +474,7 @@ with tab2:
                 c2.metric("At risk",    int((df["Status"] == "At Risk").sum()))
                 c3.metric("Deficit",    int((df["Status"] == "Deficit").sum()))
                 styled = df.style.map(_color_status, subset=["Status"]).format(
-                    {"Hours": "{:.1f}", "Target": "{:.1f}", "Deficit": "{:.1f}"}
+                    {"Hours": _fmt_hrs, "Target": _fmt_hrs, "Deficit": _fmt_hrs}
                 )
                 st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -480,12 +498,12 @@ with tab3:
         working_days = _working_days_in_month(year_sel, month_sel)
         st.subheader(f"{month_label}  ·  {working_days} working days")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Total hours (all employees)", f"{df['Hours'].sum():.0f}")
-        c2.metric("Avg hours per employee",      f"{df['Hours'].mean():.1f}")
-        c3.metric("Total deficit hours",         f"{df['Deficit'].sum():.0f}")
+        c1.metric("Total hours (all employees)", _fmt_hrs(df["Hours"].sum()))
+        c2.metric("Avg hours per employee",      _fmt_hrs(df["Hours"].mean()))
+        c3.metric("Total deficit hours",         _fmt_hrs(df["Deficit"].sum()))
         st.dataframe(
             df.style.format({
-                "Hours": "{:.1f}", "Expected Hrs": "{:.1f}", "Deficit": "{:.1f}",
+                "Hours": _fmt_hrs, "Expected Hrs": _fmt_hrs, "Deficit": _fmt_hrs,
             }),
             use_container_width=True, hide_index=True,
         )
