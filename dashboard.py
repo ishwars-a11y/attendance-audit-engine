@@ -25,31 +25,26 @@ def _secret(key: str) -> str:
 st.set_page_config(page_title="Attendance Dashboard", page_icon="📋", layout="wide")
 
 # ---------------------------------------------------------------------------
-# Global CSS
+# Global CSS  (dark-theme compatible — no background override)
 # ---------------------------------------------------------------------------
 
 st.markdown("""
 <style>
-/* App background */
-.stApp { background: #f1f5f9; }
-.main .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
 footer { visibility: hidden; }
 
 /* Metric cards */
 [data-testid="metric-container"] {
-    background: white;
+    background: rgba(255,255,255,0.06);
     border-radius: 10px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid rgba(255,255,255,0.12);
     padding: 1rem 1.25rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,.06);
 }
-[data-testid="stMetricValue"] { color: #0f172a !important; font-weight: 700 !important; }
 [data-testid="stMetricLabel"] {
-    color: #64748b !important;
     font-size: 0.78rem !important;
     font-weight: 600 !important;
     text-transform: uppercase;
     letter-spacing: .05em;
+    opacity: 0.7;
 }
 
 /* Sidebar */
@@ -78,13 +73,12 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 /* Tabs */
 .stTabs [data-baseweb="tab-list"] {
     background: transparent;
-    border-bottom: 2px solid #e2e8f0;
+    border-bottom: 2px solid rgba(255,255,255,0.12);
     gap: 0;
     padding-bottom: 0;
 }
 .stTabs [data-baseweb="tab"] {
     padding: 10px 24px;
-    color: #64748b;
     font-size: 0.88rem;
     font-weight: 500;
     border-bottom: 3px solid transparent;
@@ -92,26 +86,29 @@ section[data-testid="stSidebar"] .stButton > button:hover {
     background: transparent !important;
 }
 .stTabs [aria-selected="true"] {
-    color: #0f172a !important;
-    border-bottom: 3px solid #0f172a !important;
+    border-bottom: 3px solid #60a5fa !important;
     font-weight: 700 !important;
 }
 .stTabs [data-baseweb="tab-highlight"] { display: none !important; }
 
 /* Alert banners */
-.alert { border-radius: 8px; padding: 10px 16px; margin-bottom: 10px; font-size: 0.88rem; font-weight: 500; line-height: 1.4; }
-.alert-red    { background: #fef2f2; border-left: 4px solid #ef4444; color: #7f1d1d; }
-.alert-yellow { background: #fffbeb; border-left: 4px solid #f59e0b; color: #78350f; }
-.alert-green  { background: #f0fdf4; border-left: 4px solid #22c55e; color: #14532d; }
+.alert { border-radius: 8px; padding: 10px 16px; margin-bottom: 10px; font-size: 0.88rem; font-weight: 500; line-height: 1.5; }
+.alert-red    { background: rgba(239,68,68,0.15);  border-left: 4px solid #f87171; color: #fca5a5; }
+.alert-yellow { background: rgba(245,158,11,0.15); border-left: 4px solid #fbbf24; color: #fcd34d; }
+.alert-green  { background: rgba(34,197,94,0.15);  border-left: 4px solid #4ade80; color: #86efac; }
 
-/* Section labels */
-.section-label {
-    font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: .08em; color: #94a3b8; margin-bottom: 6px;
+/* Date range badge */
+.date-badge {
+    display: inline-block;
+    background: rgba(96,165,250,0.15);
+    border: 1px solid rgba(96,165,250,0.3);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 0.82rem;
+    color: #93c5fd;
+    font-weight: 600;
+    margin-bottom: 12px;
 }
-
-/* Dataframe container */
-[data-testid="stDataFrame"] { background: white; border-radius: 10px; border: 1px solid #e2e8f0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -172,6 +169,10 @@ def _fmt_hrs(h) -> str:
     total_min = round(abs(h) * 60)
     return f"{total_min // 60}h {total_min % 60}m"
 
+
+def _date_badge(start: str, end: str) -> str:
+    return f'<span class="date-badge">📅 {start} → {end}</span>'
+
 # ---------------------------------------------------------------------------
 # Data loaders
 # ---------------------------------------------------------------------------
@@ -212,15 +213,14 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     df["leave_type"]     = df["leave_type"].fillna("")
 
     df = df.rename(columns={
-        "hours_logged":   "Hours",
+        "hours_logged":   "Total Hours",
         "session_count":  "Sessions",
         "first_clock_in": "Clock In",
         "last_clock_out": "Clock Out",
         "leave_type":     "Leave",
     })
-    # Problems at top: sort by hours ascending, alphabetically within same hours
-    df = df.sort_values(["Hours", "Employee"]).drop(columns=["snapshot_date"])
-    return df[["Employee", "Type", "Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out", "Leave"]].reset_index(drop=True)
+    df = df.sort_values(["Total Hours", "Employee"]).drop(columns=["snapshot_date"])
+    return df[["Employee", "Type", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out", "Leave"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=300)
@@ -290,7 +290,7 @@ def load_current_week() -> pd.DataFrame:
         .reset_index()
     )
 
-    days_elapsed = max(date.today().weekday(), 1)
+    days_elapsed = max(today.weekday(), 1)
     agg["Target"]    = (agg["weekly_target"] - agg["Leave_Days"] * agg["daily_target"]).clip(lower=0)
     agg["Projected"] = (agg["Hours"] / days_elapsed * 5).round(2)
 
@@ -394,58 +394,58 @@ def load_anomaly_summary(start: str, end: str) -> pd.DataFrame:
     return pd.DataFrame(records).sort_values("Total", ascending=False).reset_index(drop=True)
 
 # ---------------------------------------------------------------------------
-# Styler helpers
+# Styler helpers  — all colors readable on Streamlit's dark dataframe bg
 # ---------------------------------------------------------------------------
 
 def _color_status(val):
     return {
-        "Met":      "color:#15803d; font-weight:700",
-        "On Track": "color:#15803d; font-weight:700",
-        "At Risk":  "color:#b45309; font-weight:700",
-        "Deficit":  "color:#dc2626; font-weight:700",
+        "Met":      "color:#4ade80; font-weight:700",
+        "On Track": "color:#4ade80; font-weight:700",
+        "At Risk":  "color:#fbbf24; font-weight:700",
+        "Deficit":  "color:#f87171; font-weight:700",
     }.get(val, "")
 
 def _color_anomaly(val):
-    if val in _CRITICAL: return "color:#dc2626; font-weight:700"
-    if val in _WARNING:  return "color:#b45309; font-weight:600"
-    return "color:#1d4ed8; font-weight:600"
+    if val in _CRITICAL: return "color:#f87171; font-weight:700"
+    if val in _WARNING:  return "color:#fbbf24; font-weight:600"
+    return "color:#60a5fa; font-weight:600"
 
 def _color_hours(val):
     try:
         h = float(val)
     except (TypeError, ValueError):
         return ""
-    if h == 0:  return "color:#dc2626; font-weight:700"
-    if h < 4:   return "color:#b45309; font-weight:600"
-    if h >= 10: return "color:#1d4ed8; font-weight:600"
-    return "color:#0f172a"
+    if h == 0:  return "color:#f87171; font-weight:700"
+    if h < 4:   return "color:#fbbf24; font-weight:600"
+    if h >= 10: return "color:#60a5fa; font-weight:600"
+    return "color:#e2e8f0"  # normal range — light, visible on dark bg
 
 def _color_deficit(val):
     try:
         h = float(val)
     except (TypeError, ValueError):
         return ""
-    if h > 4:  return "color:#dc2626; font-weight:700"
-    if h > 0:  return "color:#b45309; font-weight:600"
-    return "color:#15803d; font-weight:600"
+    if h > 4: return "color:#f87171; font-weight:700"
+    if h > 0: return "color:#fbbf24; font-weight:600"
+    return "color:#4ade80; font-weight:600"
 
 def _color_absent(val):
     try:
         v = int(val)
     except (TypeError, ValueError):
         return ""
-    if v == 0: return "color:#15803d"
-    if v <= 2: return "color:#b45309; font-weight:600"
-    return "color:#dc2626; font-weight:700"
+    if v == 0: return "color:#4ade80"
+    if v <= 2: return "color:#fbbf24; font-weight:600"
+    return "color:#f87171; font-weight:700"
 
 def _heat_count(val):
     try:
         v = int(val)
     except (TypeError, ValueError):
         return ""
-    if v == 0: return "color:#cbd5e1"
-    if v == 1: return "color:#b45309; font-weight:600"
-    return "color:#dc2626; font-weight:700"
+    if v == 0: return "color:#475569"
+    if v == 1: return "color:#fbbf24; font-weight:600"
+    return "color:#f87171; font-weight:700"
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -461,24 +461,24 @@ if "di_end" not in st.session_state:
 with st.sidebar:
     st.markdown("## 📋 Attendance")
     st.markdown("---")
-    st.markdown('<p class="section-label" style="color:#475569">Quick Range</p>', unsafe_allow_html=True)
+    st.markdown("**Quick Range**")
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Today", use_container_width=True):
+        if st.button("Today",      use_container_width=True):
             st.session_state["di_start"] = today
             st.session_state["di_end"]   = today
-        if st.button("Last 7d", use_container_width=True):
+        if st.button("Last 7d",    use_container_width=True):
             st.session_state["di_start"] = today - timedelta(days=7)
             st.session_state["di_end"]   = today - timedelta(days=1)
         if st.button("This Month", use_container_width=True):
             st.session_state["di_start"] = date(today.year, today.month, 1)
             st.session_state["di_end"]   = today
     with c2:
-        if st.button("This Week", use_container_width=True):
+        if st.button("This Week",  use_container_width=True):
             st.session_state["di_start"] = today - timedelta(days=today.weekday())
             st.session_state["di_end"]   = today
-        if st.button("Last 30d", use_container_width=True):
+        if st.button("Last 30d",   use_container_width=True):
             st.session_state["di_start"] = today - timedelta(days=30)
             st.session_state["di_end"]   = today - timedelta(days=1)
         if st.button("Last Month", use_container_width=True):
@@ -488,7 +488,7 @@ with st.sidebar:
             st.session_state["di_end"]   = prev
 
     st.markdown("---")
-    st.markdown('<p class="section-label" style="color:#475569">Custom</p>', unsafe_allow_html=True)
+    st.markdown("**Custom Range**")
     range_start = st.date_input("From", key="di_start", max_value=today)
     range_end   = st.date_input("To",   key="di_end",   max_value=today)
 
@@ -497,18 +497,17 @@ with st.sidebar:
         st.stop()
 
     st.markdown("---")
-    st.caption(f"Engine runs 5× daily · Refreshes every 5 min")
+    st.caption("Engine runs 5× daily · Data refreshes every 5 min")
 
 start_str = range_start.isoformat()
 end_str   = range_end.isoformat()
-days_span = (range_end - range_start).days + 1
 
 # ---------------------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------------------
 
-st.markdown(f"## Attendance Dashboard")
-st.caption(f"{start_str}  →  {end_str}  ·  {days_span} day(s)")
+st.markdown("## Attendance Dashboard")
+st.markdown(_date_badge(start_str, end_str), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -527,29 +526,37 @@ with tab1:
     if not valid_dates:
         st.info("No snapshot data in the selected date range.")
     else:
-        col_pick, col_prev, col_next, _ = st.columns([4, 1, 1, 4])
-        with col_pick:
+        # Session-state-backed date selector so Prev/Next sync with the dropdown
+        if "daily_sel" not in st.session_state or st.session_state["daily_sel"] not in valid_dates:
+            st.session_state["daily_sel"] = valid_dates[0]
+
+        date_col, _ = st.columns([4, 4])
+        with date_col:
             selected_date = st.selectbox(
                 "Date", valid_dates,
+                index=valid_dates.index(st.session_state["daily_sel"]),
                 format_func=lambda d: pd.to_datetime(d).strftime("%A, %d %b %Y"),
                 label_visibility="collapsed",
             )
+        st.session_state["daily_sel"] = selected_date
         idx = valid_dates.index(selected_date)
-        with col_prev:
-            st.write("")
+
+        nav1, nav2, _ = st.columns([1, 1, 6])
+        with nav1:
             if st.button("◀ Prev", use_container_width=True) and idx < len(valid_dates) - 1:
-                selected_date = valid_dates[idx + 1]
-        with col_next:
-            st.write("")
+                st.session_state["daily_sel"] = valid_dates[idx + 1]
+                st.rerun()
+        with nav2:
             if st.button("Next ▶", use_container_width=True) and idx > 0:
-                selected_date = valid_dates[idx - 1]
+                st.session_state["daily_sel"] = valid_dates[idx - 1]
+                st.rerun()
 
         df = load_daily_snapshot(selected_date)
         if df.empty:
             st.info("No data for this date.")
         else:
-            absent   = df[(df["Hours"] == 0) & (df["Leave"] == "")]
-            low_hrs  = df[(df["Hours"] > 0) & (df["Hours"] < 4) & (df["Leave"] == "")]
+            absent  = df[(df["Total Hours"] == 0) & (df["Leave"] == "")]
+            low_hrs = df[(df["Total Hours"] > 0) & (df["Total Hours"] < 4) & (df["Leave"] == "")]
             on_leave = df[df["Leave"] != ""]
 
             if not absent.empty:
@@ -562,25 +569,26 @@ with tab1:
                 st.markdown('<div class="alert alert-green">✅ No attendance issues today.</div>', unsafe_allow_html=True)
 
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Present",    int((df["Hours"] > 0).sum()))
+            c1.metric("Present",    int((df["Total Hours"] > 0).sum()))
             c2.metric("Absent",     len(absent))
             c3.metric("On Leave",   len(on_leave))
-            c4.metric("Avg Hours",  _fmt_hrs(df[df["Hours"] > 0]["Hours"].mean() if (df["Hours"] > 0).any() else 0))
+            present_hrs = df[df["Total Hours"] > 0]["Total Hours"]
+            c4.metric("Avg Hours",  _fmt_hrs(present_hrs.mean() if not present_hrs.empty else 0))
             c5.metric("Avg Breaks", _fmt_hrs(df["Break Hrs"].mean()))
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
             styled = (
                 df.style
-                .map(_color_hours, subset=["Hours"])
+                .map(_color_hours, subset=["Total Hours"])
                 .map(_color_deficit, subset=["Break Hrs"])
-                .format({"Hours": _fmt_hrs, "Break Hrs": _fmt_hrs})
+                .format({"Total Hours": _fmt_hrs, "Break Hrs": _fmt_hrs})
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
 # ── Tab 2: Weekly ─────────────────────────────────────────────────────────────
 
 with tab2:
-    monday   = today - timedelta(days=today.weekday())
+    monday    = today - timedelta(days=today.weekday())
     view_mode = st.radio("", ["Current Week (live)", "Past Weeks"], horizontal=True, label_visibility="collapsed")
 
     if view_mode == "Current Week (live)":
@@ -610,7 +618,7 @@ with tab2:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             styled = (
                 df.style
-                .map(_color_status, subset=["Status"])
+                .map(_color_status,  subset=["Status"])
                 .format({"Hours": _fmt_hrs, "Target": _fmt_hrs, "Projected": _fmt_hrs})
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -644,7 +652,7 @@ with tab2:
                 st.markdown("&nbsp;", unsafe_allow_html=True)
                 styled = (
                     df.style
-                    .map(_color_status, subset=["Status"])
+                    .map(_color_status,  subset=["Status"])
                     .map(_color_deficit, subset=["Deficit"])
                     .format({"Hours": _fmt_hrs, "Target": _fmt_hrs, "Deficit": _fmt_hrs})
                 )
@@ -690,6 +698,7 @@ with tab3:
 # ── Tab 4: Anomalies ──────────────────────────────────────────────────────────
 
 with tab4:
+    st.markdown(_date_badge(start_str, end_str), unsafe_allow_html=True)
     df = load_anomalies(start_str, end_str)
     if df.empty:
         st.info("No anomalies in the selected date range.")
@@ -710,10 +719,10 @@ with tab4:
         n_info     = len(df) - n_critical - n_warning
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total",       len(df))
-        c2.metric("Critical",    n_critical)
-        c3.metric("Warning",     n_warning)
-        c4.metric("Info",        n_info)
+        c1.metric("Total",    len(df))
+        c2.metric("Critical", n_critical)
+        c3.metric("Warning",  n_warning)
+        c4.metric("Info",     n_info)
 
         st.markdown("&nbsp;", unsafe_allow_html=True)
         st.caption("Sorted by severity · Critical (red) → Warning (amber) → Info (blue)")
@@ -723,13 +732,14 @@ with tab4:
 # ── Tab 5: Anomaly Breakdown ──────────────────────────────────────────────────
 
 with tab5:
+    st.markdown(_date_badge(start_str, end_str), unsafe_allow_html=True)
     df = load_anomaly_summary(start_str, end_str)
     if df.empty:
         st.info("No anomaly data in the selected date range.")
     else:
-        st.markdown(f"**Breakdown by employee**  ·  {start_str} → {end_str}")
-        st.caption("0 = grey · 1 = amber · 2+ = red")
-
+        st.markdown("**Breakdown by employee** · sorted by total anomalies")
+        st.caption("0 = muted · 1 = amber · 2+ = red")
+        st.markdown("&nbsp;", unsafe_allow_html=True)
         num_cols = [c for c in df.columns if c != "Employee"]
         styled = df.style.map(_heat_count, subset=num_cols)
         st.dataframe(styled, use_container_width=True, hide_index=True)
