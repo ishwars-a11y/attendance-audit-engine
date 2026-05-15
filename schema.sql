@@ -46,10 +46,14 @@ create table if not exists anomalies (
     anomaly_type     text not null check (anomaly_type in (
                          'Missing Clock-Out',
                          'Unexcused Absence',
+                         'Late / No Start',
                          'Excessive Hours',
                          'Excessive Breaks',
-                         'Late / No Start',
-                         'Weekly Deficit'
+                         'Weekly Deficit',
+                         'Early Departure',
+                         'Long Breaks',
+                         'Consecutive Absence',
+                         'Chronic Late Starter'
                      )),
     detail           text,
     detected_at      timestamptz not null default now()
