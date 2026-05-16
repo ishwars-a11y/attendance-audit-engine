@@ -279,7 +279,7 @@ def range_picker(prefix: str) -> tuple[str, str, str]:
 def _flatten_employees(df: pd.DataFrame):
     emp = pd.json_normalize(df["employees"])
     df  = df.drop(columns=["employees"])
-    df["Employee"] = emp["display_name"]
+    df["Employee"] = emp["jibble_name"]
     df["Type"]     = emp["employment_type"].str.replace("_", " ").str.title()
     return df, emp
 
@@ -303,7 +303,7 @@ def _fmt_hrs(h) -> str:
 def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, employees(display_name, employment_type)")
+        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, employees(jibble_name, employment_type)")
         .eq("snapshot_date", snap_date)
         .execute()
     )
@@ -338,7 +338,7 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
 def load_weekly_summary(week_start: str) -> pd.DataFrame:
     rows = (
         sb.table("weekly_summaries")
-        .select("week_start, week_end, total_hours, effective_target, deficit, leave_days, employees(display_name, employment_type)")
+        .select("week_start, week_end, total_hours, effective_target, deficit, leave_days, employees(jibble_name, employment_type)")
         .eq("week_start", week_start)
         .execute()
     )
@@ -372,7 +372,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, leave_type, employees(display_name, employment_type, weekly_target_hrs, daily_target_hrs)")
+        .select("snapshot_date, hours_logged, leave_type, employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs)")
         .gte("snapshot_date", monday)
         .lte("snapshot_date", through)
         .execute()
@@ -383,7 +383,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 
     emp_cols = pd.json_normalize(df["employees"])
     df = df.drop(columns=["employees"])
-    df["Employee"]      = emp_cols["display_name"]
+    df["Employee"]      = emp_cols["jibble_name"]
     df["weekly_target"] = emp_cols["weekly_target_hrs"].astype(float)
     df["daily_target"]  = emp_cols["daily_target_hrs"].astype(float)
     df["leave_type"]    = df["leave_type"].fillna("")
@@ -428,7 +428,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, leave_type, employees(display_name, employment_type, weekly_target_hrs, daily_target_hrs)")
+        .select("snapshot_date, hours_logged, leave_type, employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs)")
         .gte("snapshot_date", start)
         .lte("snapshot_date", end)
         .execute()
@@ -439,7 +439,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
 
     emp_cols = pd.json_normalize(df["employees"])
     df = df.drop(columns=["employees"])
-    df["Employee"]     = emp_cols["display_name"]
+    df["Employee"]     = emp_cols["jibble_name"]
     df["daily_target"] = emp_cols["daily_target_hrs"].astype(float)
     df["leave_type"]   = df["leave_type"].fillna("")
     df["hours_logged"] = df["hours_logged"].astype(float)
@@ -470,7 +470,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
 def load_anomalies(start: str, end: str) -> pd.DataFrame:
     rows = (
         sb.table("anomalies")
-        .select("anomaly_date, anomaly_type, detail, employees(display_name)")
+        .select("anomaly_date, anomaly_type, detail, employees(jibble_name)")
         .gte("anomaly_date", start)
         .lte("anomaly_date", end)
         .order("anomaly_date", desc=True)
@@ -483,7 +483,7 @@ def load_anomalies(start: str, end: str) -> pd.DataFrame:
 
     emp = pd.json_normalize(df["employees"])
     df  = df.drop(columns=["employees"])
-    df["Employee"] = emp["display_name"]
+    df["Employee"] = emp["jibble_name"]
     df = df.rename(columns={"anomaly_date": "Date", "anomaly_type": "Type", "detail": "Detail"})
     df["_sev"] = df["Type"].map(ANOMALY_SEVERITY).fillna(99)
     df = df.sort_values(["_sev", "Date"], ascending=[True, False]).drop(columns=["_sev"])
