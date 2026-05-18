@@ -8,6 +8,8 @@ on:
     - cron: "30 15 * * 1-5"  #  9:00 PM IST
     - cron: "30 17 * * 1-5"  # 11:00 PM IST (final)
   workflow_dispatch:  # allows manual trigger from GitHub Actions UI
+  push:
+    branches: [main]   # keep-alive: any push resets GitHub's inactivity timer
 
 jobs:
   run-engine:
