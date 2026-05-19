@@ -600,6 +600,14 @@ with tab1:
         if st.button("🔄 Refresh", key="att_refresh"):
             load_daily_snapshot.clear()
             st.rerun()
+
+        # ── DEBUG: raw DB read (remove once clock-out issue is resolved) ──────
+        _raw = sb.table("daily_snapshots").select(
+            "snapshot_date, member_id, last_clock_out, pulled_at"
+        ).eq("snapshot_date", start_str).execute()
+        st.caption(f"🔍 DEBUG raw rows for {start_str}: {_raw.data}")
+        # ─────────────────────────────────────────────────────────────────────
+
         df, last_synced = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
