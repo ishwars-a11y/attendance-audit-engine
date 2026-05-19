@@ -639,61 +639,6 @@ with tab1:
             load_daily_snapshot.clear()
             st.rerun()
 
-        # ── DEBUG: trace full pipeline ────────────────────────────────────────
-        with st.expander("🔍 Debug: Clock-Out Pipeline", expanded=True):
-            # Step 1 — scalar processing (row-by-row, no pandas)
-            _raw = sb.table("daily_snapshots").select(
-                "member_id, hours_logged, first_clock_in, last_clock_out, "
-                "employees(jibble_name, employment_type)"
-            ).eq("snapshot_date", start_str).execute()
-
-            st.caption(f"**Step 1 — Scalar processing** (rows: {len(_raw.data)})")
-            _rows_info = []
-            for _i, _r in enumerate(_raw.data):
-                _emp_field = _r.get("employees")
-                _emp       = (_emp_field[0] if isinstance(_emp_field, list) else _emp_field) or {}
-                _name      = _emp.get("jibble_name", "—null—")
-                _co_raw    = _r.get("last_clock_out")
-                try:
-                    _dt  = pd.to_datetime(_co_raw, utc=True, errors="coerce")
-                    _fmt = _dt.tz_convert("Asia/Kolkata").strftime("%I:%M %p") if pd.notna(_dt) else "NaT→—"
-                except Exception as _e:
-                    _fmt = f"ERR:{_e}"
-                _rows_info.append({
-                    "idx": _i, "employee": _name,
-                    "emp_type": type(_emp_field).__name__,
-                    "co_raw": str(_co_raw), "co_fmt": _fmt,
-                })
-            st.dataframe(pd.DataFrame(_rows_info), use_container_width=True, hide_index=True)
-
-            # Step 2 — compare vectorised vs map-based pipeline
-            st.caption("**Step 2 — Vectorised (old) vs .map() (new) pipeline**")
-            _rows2 = sb.table("daily_snapshots").select(
-                "snapshot_date, hours_logged, session_count, first_clock_in, "
-                "last_clock_out, leave_type, pulled_at, "
-                "employees(jibble_name, employment_type)"
-            ).eq("snapshot_date", start_str).execute()
-            _df2 = pd.DataFrame(_rows2.data)
-            if not _df2.empty:
-                _df2, _emp2 = _flatten_employees(_df2)
-                st.caption(f"last_clock_out dtype after flatten: **{_df2['last_clock_out'].dtype}**")
-                # Old vectorised path
-                _last_dt2 = pd.to_datetime(_df2["last_clock_out"], utc=True, errors="coerce")
-                _df2["co_pandas"] = (
-                    _last_dt2.dt.tz_convert("Asia/Kolkata")
-                              .dt.strftime("%I:%M %p")
-                              .fillna("—")
-                )
-                # New map path (uses scalar _parse_utc / _to_ist_str)
-                _df2["co_map"] = _df2["last_clock_out"].map(_to_ist_str)
-                st.dataframe(
-                    _df2[["Employee", "last_clock_out", "co_pandas", "co_map"]],
-                    use_container_width=True, hide_index=True,
-                )
-        # ─────────────────────────────────────────────────────────────────────
-
-        # Always clear cache so the table below always reflects latest DB state
-        load_daily_snapshot.clear()
         df, last_synced = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
