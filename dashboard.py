@@ -597,10 +597,9 @@ with tab1:
 
     # ── Day view ─────────────────────────────────────────────────────────────
     if gran == "day":
-        if start == today:
-            if st.button("🔄 Refresh", key="att_refresh"):
-                load_daily_snapshot.clear()
-                st.rerun()
+        if st.button("🔄 Refresh", key="att_refresh"):
+            load_daily_snapshot.clear()
+            st.rerun()
         df, last_synced = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
