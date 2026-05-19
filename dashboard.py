@@ -326,8 +326,27 @@ def _to_ist_str(val) -> str:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
-def load_daily_snapshot(snap_date: str) -> tuple[pd.DataFrame, str | None]:
-    """Returns (df, last_synced_ist_str). last_synced is None when no data exists."""
+def load_last_synced() -> str | None:
+    """Most-recent engine run time (global max pulled_at across all snapshot dates).
+    Shown once in the page header so every view — Today, Yesterday, Week, etc. —
+    displays the same consistent sync timestamp.
+    """
+    res = (
+        sb.table("daily_snapshots")
+        .select("pulled_at")
+        .order("pulled_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    ts = _parse_utc(res.data[0].get("pulled_at"))
+    return ts.tz_convert("Asia/Kolkata").strftime("%-I:%M %p") if pd.notna(ts) else None
+
+
+@st.cache_data(ttl=60)
+def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
+    """Returns formatted attendance DataFrame for snap_date."""
     rows = (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, pulled_at, employees(jibble_name, employment_type)")
@@ -336,15 +355,7 @@ def load_daily_snapshot(snap_date: str) -> tuple[pd.DataFrame, str | None]:
     )
     df = pd.DataFrame(rows.data)
     if df.empty:
-        return df, None
-
-    # Compute last-synced from the most-recent pulled_at across all rows
-    pulled_series = pd.to_datetime(df["pulled_at"], utc=True, errors="coerce")
-    last_pulled   = pulled_series.max()
-    last_synced   = (
-        last_pulled.tz_convert("Asia/Kolkata").strftime("%-I:%M %p")
-        if pd.notna(last_pulled) else None
-    )
+        return df
 
     df, _ = _flatten_employees(df)
 
@@ -379,7 +390,7 @@ def load_daily_snapshot(snap_date: str) -> tuple[pd.DataFrame, str | None]:
     })
     df = df.sort_values(["Total Hours", "Employee"]).drop(columns=["snapshot_date", "pulled_at"])
     # Leave moved to col 3 so it's always visible
-    return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out"]].reset_index(drop=True), last_synced
+    return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=300)
@@ -613,7 +624,15 @@ def _heat_count(val):
 # Page header
 # ---------------------------------------------------------------------------
 
-st.markdown("## 📋 Attendance Dashboard")
+_hdr_col, _sync_col = st.columns([6, 2])
+_hdr_col.markdown("## 📋 Attendance Dashboard")
+_last_synced_global = load_last_synced()
+if _last_synced_global:
+    _sync_col.markdown(
+        f'<div style="text-align:right;padding-top:14px;font-size:0.78rem;opacity:0.65;">'
+        f'⏱ Engine last synced: <b>{_last_synced_global} IST</b></div>',
+        unsafe_allow_html=True,
+    )
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
@@ -637,9 +656,10 @@ with tab1:
     if gran == "day":
         if st.button("🔄 Refresh", key="att_refresh"):
             load_daily_snapshot.clear()
+            load_last_synced.clear()
             st.rerun()
 
-        df, last_synced = load_daily_snapshot(start_str)
+        df = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
         else:
@@ -647,18 +667,15 @@ with tab1:
             low_hrs  = df[(df["Total Hours"] > 0) & (df["Total Hours"] < 4) & (df["Leave"] == "")]
             on_leave = df[df["Leave"] != ""]
 
-            # Show last-synced time and a note when anyone is missing a clock-out
+            # Note when anyone on today's view is still missing a clock-out
             is_today = (start == today)
             missing_co = df[df["Clock Out"] == "—"]
-            sync_note = f"Last synced: **{last_synced} IST**" if last_synced else ""
             if is_today and not missing_co.empty:
                 names_co = ", ".join(missing_co["Employee"].tolist())
                 st.caption(
-                    f"⏱ {sync_note} · Clock-out not yet recorded for: {names_co}. "
+                    f"⏳ Clock-out not yet recorded for: **{names_co}**. "
                     "Will update at the next sync or when they clock out in Jibble."
                 )
-            elif sync_note:
-                st.caption(f"⏱ {sync_note}")
 
             if not absent.empty:
                 names = ", ".join(absent["Employee"].tolist())
