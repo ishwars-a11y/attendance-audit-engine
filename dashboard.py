@@ -601,11 +601,46 @@ with tab1:
             load_daily_snapshot.clear()
             st.rerun()
 
-        # ── DEBUG: raw DB read (remove once clock-out issue is resolved) ──────
-        _raw = sb.table("daily_snapshots").select(
-            "snapshot_date, member_id, last_clock_out, pulled_at"
-        ).eq("snapshot_date", start_str).execute()
-        st.caption(f"🔍 DEBUG raw rows for {start_str}: {_raw.data}")
+        # ── DEBUG: trace full pipeline for every employee ────────────────────
+        with st.expander("🔍 Debug: Clock-Out Pipeline", expanded=True):
+            _raw = sb.table("daily_snapshots").select(
+                "member_id, hours_logged, first_clock_in, last_clock_out, "
+                "employees(jibble_name, employment_type)"
+            ).eq("snapshot_date", start_str).execute()
+
+            st.caption(f"Rows returned by JOIN query: **{len(_raw.data)}**")
+
+            _rows_info = []
+            for _i, _r in enumerate(_raw.data):
+                _emp_field = _r.get("employees")
+                _emp_type  = type(_emp_field).__name__
+                _emp       = (_emp_field[0] if isinstance(_emp_field, list) else _emp_field) or {}
+                _name      = _emp.get("jibble_name", "—null—")
+                _co_raw    = _r.get("last_clock_out")
+
+                # Replicate pd.to_datetime processing
+                try:
+                    _dt = pd.to_datetime(_co_raw, utc=True, errors="coerce")
+                    _fmt = (
+                        _dt.tz_convert("Asia/Kolkata").strftime("%I:%M %p")
+                        if pd.notna(_dt) else "NaT→—"
+                    )
+                except Exception as _e:
+                    _fmt = f"ERR:{_e}"
+
+                _rows_info.append({
+                    "idx":      _i,
+                    "employee": _name,
+                    "emp_type": _emp_type,
+                    "co_raw":   str(_co_raw),
+                    "co_fmt":   _fmt,
+                })
+
+            st.dataframe(
+                pd.DataFrame(_rows_info),
+                use_container_width=True,
+                hide_index=True,
+            )
         # ─────────────────────────────────────────────────────────────────────
 
         df, last_synced = load_daily_snapshot(start_str)
