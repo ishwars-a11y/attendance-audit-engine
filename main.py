@@ -72,6 +72,13 @@ def run_for_date(target_date: date):
         first_clock_in_dt  = _parse_utc(first_clock_in_str)
         last_clock_out_dt  = _parse_utc(last_clock_out_str)
 
+        logger.info(
+            f"  [{emp.get('jibble_name', mid)}] "
+            f"hours={hours_logged:.2f} sessions={session_count} "
+            f"first_in={first_clock_in_str!r} last_out={last_clock_out_str!r} "
+            f"missing_co={has_missing_clockout}"
+        )
+
         db.upsert_snapshot({
             "member_id":      mid,
             "snapshot_date":  target_date.isoformat(),
