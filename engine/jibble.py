@@ -187,11 +187,12 @@ class JibbleClient:
             session_count = (len(breaks) + 1) if hours_logged > 0 else 0
 
             # Clock-in / clock-out
-            first_clock_in       = daily.get(TS_FIRST_IN_TS)  # UTC str or None
-            last_clock_out       = daily.get(TS_LAST_OUT_TS)  # UTC str or None
-            last_out_local       = daily.get(TS_LAST_OUT)      # local time str or None
+            # Normalise empty strings → None so all downstream checks are clean.
+            first_clock_in = daily.get(TS_FIRST_IN_TS) or None
+            last_clock_out = daily.get(TS_LAST_OUT_TS) or None
+            last_out_local = daily.get(TS_LAST_OUT)    or None   # local time str
             has_missing_clockout = (
-                first_clock_in is not None and last_out_local is None
+                first_clock_in is not None and not last_out_local
             )
 
             # Fallback A: Jibble sometimes omits lastOutTimestamp (UTC) even when lastOut
@@ -201,7 +202,7 @@ class JibbleClient:
                 try:
                     from datetime import datetime as _dt
                     import re as _re
-                    # lastOut format: "8:02 PM" or "08:02 PM"
+                    # Try "8:02 PM" / "08:02 PM" format
                     m = _re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)", last_out_local.strip(), _re.I)
                     if m:
                         hh, mm, ampm = int(m.group(1)), int(m.group(2)), m.group(3).upper()
@@ -209,21 +210,65 @@ class JibbleClient:
                             hh += 12
                         elif ampm == "AM" and hh == 12:
                             hh = 0
-                        # IST = UTC + 5h30m
                         ist_dt = _dt(target_date.year, target_date.month, target_date.day,
                                      hh, mm, tzinfo=timezone(timedelta(hours=5, minutes=30)))
                         last_clock_out = ist_dt.astimezone(timezone.utc).isoformat()
-                        logger.debug(f"  {member_id}: last_clock_out derived from lastOut local string")
-                except Exception:
-                    pass
+                        logger.info(f"  {member_id}: last_clock_out derived from lastOut local string '{last_out_local}'")
+                    else:
+                        # Try full ISO datetime string (e.g. "2026-05-18T20:02:00+05:30")
+                        lo = _dt.fromisoformat(last_out_local.replace("Z", "+00:00"))
+                        last_clock_out = lo.astimezone(timezone.utc).isoformat()
+                        logger.info(f"  {member_id}: last_clock_out parsed from lastOut ISO string '{last_out_local}'")
+                except Exception as e:
+                    logger.warning(f"  {member_id}: Fallback A failed for lastOut='{last_out_local}': {e}")
+
+            # Fallback C: derive clock-out from first_clock_in + worked_hours + break_hours.
+            # Jibble's trackedHours.breaks list entries often carry their own duration under
+            # "worked", "duration", or a nested "trackedHours.worked".
+            if last_clock_out is None and first_clock_in is not None and hours_logged > 0 and breaks:
+                try:
+                    from datetime import datetime as _dt3
+                    total_break_hrs = 0.0
+                    for br in breaks:
+                        br_dur = (
+                            br.get("worked")
+                            or br.get("duration")
+                            or (br.get("trackedHours") or {}).get("worked")
+                        )
+                        if br_dur:
+                            total_break_hrs += parse_iso_duration(br_dur)
+                    if total_break_hrs > 0:
+                        fi = _dt3.fromisoformat(first_clock_in.replace("Z", "+00:00"))
+                        last_clock_out = (fi + timedelta(hours=hours_logged + total_break_hrs)).isoformat()
+                        logger.info(
+                            f"  {member_id}: last_clock_out derived from first_in + worked({hours_logged:.2f}h)"
+                            f" + breaks({total_break_hrs:.2f}h)"
+                        )
+                    else:
+                        logger.warning(
+                            f"  {member_id}: Fallback C — breaks list has {len(breaks)} entries "
+                            f"but no duration field found. Sample: {breaks[0]}"
+                        )
+                except Exception as e:
+                    logger.warning(f"  {member_id}: Fallback C failed: {e}")
+
+            # If still null after all fallbacks, log raw Jibble values for diagnosis.
+            if last_clock_out is None and first_clock_in is not None:
+                logger.warning(
+                    f"  {member_id} ({target_date}): last_clock_out unresolvable. "
+                    f"Jibble raw — lastOutTimestamp={daily.get(TS_LAST_OUT_TS)!r}, "
+                    f"lastOut={daily.get(TS_LAST_OUT)!r}, "
+                    f"breaks count={len(breaks)}, "
+                    f"breaks[0]={breaks[0] if breaks else 'n/a'!r}"
+                )
 
             # Fallback B: if Jibble omits firstInTimestamp (e.g. manually-entered sessions)
             # but we have a clock-out and hours, derive clock-in = last_clock_out − hours_logged.
             # Exact for single-session days; slightly off when breaks exist.
             if first_clock_in is None and last_clock_out is not None and hours_logged > 0:
-                from datetime import datetime as _dt2
+                from datetime import datetime as _dt4
                 try:
-                    lo = _dt2.fromisoformat(last_clock_out.replace("Z", "+00:00"))
+                    lo = _dt4.fromisoformat(last_clock_out.replace("Z", "+00:00"))
                     first_clock_in = (lo - timedelta(hours=hours_logged)).isoformat()
                     logger.debug(f"  {member_id}: first_clock_in derived from lastOut − hours")
                 except Exception:
