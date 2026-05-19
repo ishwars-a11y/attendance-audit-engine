@@ -667,16 +667,6 @@ with tab1:
             low_hrs  = df[(df["Total Hours"] > 0) & (df["Total Hours"] < 4) & (df["Leave"] == "")]
             on_leave = df[df["Leave"] != ""]
 
-            # Note when anyone on today's view is still missing a clock-out
-            is_today = (start == today)
-            missing_co = df[df["Clock Out"] == "—"]
-            if is_today and not missing_co.empty:
-                names_co = ", ".join(missing_co["Employee"].tolist())
-                st.caption(
-                    f"⏳ Clock-out not yet recorded for: **{names_co}**. "
-                    "Will update at the next sync or when they clock out in Jibble."
-                )
-
             if not absent.empty:
                 names = ", ".join(absent["Employee"].tolist())
                 st.markdown(f'<div class="alert alert-red">🔴 <b>Absent, no leave ({len(absent)}):</b> {names}</div>', unsafe_allow_html=True)
