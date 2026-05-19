@@ -51,9 +51,15 @@ def get_active_employees() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def upsert_snapshot(snapshot: dict):
-    get_client().table("daily_snapshots").upsert(
+    res = get_client().table("daily_snapshots").upsert(
         snapshot, on_conflict="member_id,snapshot_date"
     ).execute()
+    if res.data:
+        stored = res.data[0]
+        logger.info(
+            f"    DB stored → last_clock_out={stored.get('last_clock_out')!r} "
+            f"pulled_at={stored.get('pulled_at')!r}"
+        )
 
 
 def get_snapshots_for_week(member_id: str, week_start: date, week_end: date) -> list[dict]:
