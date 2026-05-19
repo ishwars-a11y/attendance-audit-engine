@@ -318,8 +318,9 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     span_hrs = (last_dt - first_dt).dt.total_seconds() / 3600
     df["Break Hrs"] = (span_hrs - df["hours_logged"]).clip(lower=0).round(2)
 
-    df["first_clock_in"] = first_dt.dt.tz_convert("Asia/Kolkata").dt.strftime("%I:%M %p")
-    df["last_clock_out"] = last_dt.dt.tz_convert("Asia/Kolkata").dt.strftime("%I:%M %p")
+    # fillna("—") prevents NaT from rendering as the string "None" in the table
+    df["first_clock_in"] = first_dt.dt.tz_convert("Asia/Kolkata").dt.strftime("%I:%M %p").fillna("—")
+    df["last_clock_out"] = last_dt.dt.tz_convert("Asia/Kolkata").dt.strftime("%I:%M %p").fillna("—")
     df["leave_type"]     = df["leave_type"].fillna("")
 
     df = df.rename(columns={
@@ -531,7 +532,7 @@ def _color_hours(val):
     if h == 0:  return "color:#f87171; font-weight:700"
     if h < 4:   return "color:#fbbf24; font-weight:600"
     if h >= 10: return "color:#60a5fa; font-weight:600"
-    return "color:#e2e8f0"
+    return ""  # normal range — use theme default so it's readable on both light and dark
 
 def _color_deficit(val):
     try:
