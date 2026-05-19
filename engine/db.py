@@ -114,6 +114,13 @@ def anomaly_exists(member_id: str, anomaly_date: date, anomaly_type: str) -> boo
     return len(res.data) > 0
 
 
+def delete_anomaly(member_id: str, anomaly_date: date, anomaly_type: str):
+    """Remove a previously-flagged anomaly that has since been resolved."""
+    get_client().table("anomalies").delete().eq("member_id", member_id).eq(
+        "anomaly_date", anomaly_date.isoformat()
+    ).eq("anomaly_type", anomaly_type).execute()
+
+
 def get_snapshot(member_id: str, snapshot_date: date) -> dict:
     res = (
         get_client()

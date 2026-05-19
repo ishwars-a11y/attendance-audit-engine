@@ -140,18 +140,24 @@ def run_for_date(target_date: date):
 
 
 def _flag(member_id: str, target_date: date, anomaly_type: str, flagged: bool, detail: str):
-    if not flagged:
-        return
     from engine import db
-    if db.anomaly_exists(member_id, target_date, anomaly_type):
-        return
-    db.insert_anomaly({
-        "member_id":    member_id,
-        "anomaly_date": target_date.isoformat(),
-        "anomaly_type": anomaly_type,
-        "detail":       detail,
-    })
-    logger.info(f"  Anomaly: {anomaly_type} — {member_id} — {detail}")
+    if flagged:
+        if not db.anomaly_exists(member_id, target_date, anomaly_type):
+            db.insert_anomaly({
+                "member_id":    member_id,
+                "anomaly_date": target_date.isoformat(),
+                "anomaly_type": anomaly_type,
+                "detail":       detail,
+            })
+            logger.info(f"  Anomaly flagged: {anomaly_type} — {member_id} — {detail}")
+    else:
+        # Resolve: if a previous run flagged this and it's no longer true, remove it.
+        # This is important for transient states like Missing Clock-Out — the 5 PM run
+        # may flag it while someone is still working; the 9 PM run should clear it once
+        # they've clocked out.
+        if db.anomaly_exists(member_id, target_date, anomaly_type):
+            db.delete_anomaly(member_id, target_date, anomaly_type)
+            logger.info(f"  Anomaly resolved: {anomaly_type} — {member_id}")
 
 
 def _run_weekly_summary(friday: date, employees: list[dict]):

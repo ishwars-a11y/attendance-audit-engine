@@ -300,16 +300,25 @@ def _fmt_hrs(h) -> str:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=300)
-def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
+def load_daily_snapshot(snap_date: str) -> tuple[pd.DataFrame, str | None]:
+    """Returns (df, last_synced_ist_str). last_synced is None when no data exists."""
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, employees(jibble_name, employment_type)")
+        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, pulled_at, employees(jibble_name, employment_type)")
         .eq("snapshot_date", snap_date)
         .execute()
     )
     df = pd.DataFrame(rows.data)
     if df.empty:
-        return df
+        return df, None
+
+    # Compute last-synced from the most-recent pulled_at across all rows
+    pulled_series = pd.to_datetime(df["pulled_at"], utc=True, errors="coerce")
+    last_pulled   = pulled_series.max()
+    last_synced   = (
+        last_pulled.tz_convert("Asia/Kolkata").strftime("%-I:%M %p")
+        if pd.notna(last_pulled) else None
+    )
 
     df, _ = _flatten_employees(df)
 
@@ -330,9 +339,9 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
         "last_clock_out": "Clock Out",
         "leave_type":     "Leave",
     })
-    df = df.sort_values(["Total Hours", "Employee"]).drop(columns=["snapshot_date"])
+    df = df.sort_values(["Total Hours", "Employee"]).drop(columns=["snapshot_date", "pulled_at"])
     # Leave moved to col 3 so it's always visible
-    return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out"]].reset_index(drop=True)
+    return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out"]].reset_index(drop=True), last_synced
 
 
 @st.cache_data(ttl=300)
@@ -588,13 +597,26 @@ with tab1:
 
     # ── Day view ─────────────────────────────────────────────────────────────
     if gran == "day":
-        df = load_daily_snapshot(start_str)
+        df, last_synced = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
         else:
             absent   = df[(df["Total Hours"] == 0) & (df["Leave"] == "")]
             low_hrs  = df[(df["Total Hours"] > 0) & (df["Total Hours"] < 4) & (df["Leave"] == "")]
             on_leave = df[df["Leave"] != ""]
+
+            # Show last-synced time and a note when anyone is missing a clock-out
+            is_today = (start == today)
+            missing_co = df[df["Clock Out"] == "—"]
+            sync_note = f"Last synced: **{last_synced} IST**" if last_synced else ""
+            if is_today and not missing_co.empty:
+                names_co = ", ".join(missing_co["Employee"].tolist())
+                st.caption(
+                    f"⏱ {sync_note} · Clock-out not yet recorded for: {names_co}. "
+                    "Will update at the next sync or when they clock out in Jibble."
+                )
+            elif sync_note:
+                st.caption(f"⏱ {sync_note}")
 
             if not absent.empty:
                 names = ", ".join(absent["Employee"].tolist())
