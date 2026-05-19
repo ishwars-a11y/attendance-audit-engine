@@ -295,6 +295,32 @@ def _fmt_hrs(h) -> str:
     return f"{total_min // 60}h {total_min % 60}m"
 
 
+def _parse_utc(val) -> "pd.Timestamp":
+    """Parse a raw Supabase timestamptz value to a UTC-aware Timestamp, or NaT.
+
+    Using the scalar pd.to_datetime path is intentional: the vectorised
+    pd.to_datetime(series, utc=True) can silently coerce valid timezone-aware
+    strings to NaT on some pandas builds when the column contains a mix of
+    timezone-aware strings and None values.
+    """
+    if val is None:
+        return pd.NaT
+    try:
+        if pd.isna(val):
+            return pd.NaT
+    except (TypeError, ValueError):
+        pass
+    return pd.to_datetime(val, utc=True, errors="coerce")
+
+
+def _to_ist_str(val) -> str:
+    """Convert a raw timestamptz value to an IST HH:MM AM/PM string, or '—'."""
+    ts = _parse_utc(val)
+    if pd.isna(ts):
+        return "—"
+    return ts.tz_convert("Asia/Kolkata").strftime("%I:%M %p")
+
+
 # ---------------------------------------------------------------------------
 # Data loaders
 # ---------------------------------------------------------------------------
@@ -322,15 +348,27 @@ def load_daily_snapshot(snap_date: str) -> tuple[pd.DataFrame, str | None]:
 
     df, _ = _flatten_employees(df)
 
-    first_dt = pd.to_datetime(df["first_clock_in"], utc=True, errors="coerce")
-    last_dt  = pd.to_datetime(df["last_clock_out"],  utc=True, errors="coerce")
-    span_hrs = (last_dt - first_dt).dt.total_seconds() / 3600
-    df["Break Hrs"] = (span_hrs - df["hours_logged"]).clip(lower=0).round(2)
+    # Parse timestamps element-by-element via the scalar path.
+    # pd.to_datetime(series, utc=True) can silently coerce valid timezone-aware
+    # strings to NaT when the column also contains None values on some pandas
+    # versions, so we map the scalar helper across the column instead.
+    first_ts = df["first_clock_in"].map(_parse_utc)   # object Series: Timestamps + NaT
+    last_ts  = df["last_clock_out"].map(_parse_utc)
 
-    # fillna("—") prevents NaT from rendering as the string "None" in the table
-    df["first_clock_in"] = first_dt.dt.tz_convert("Asia/Kolkata").dt.strftime("%I:%M %p").fillna("—")
-    df["last_clock_out"] = last_dt.dt.tz_convert("Asia/Kolkata").dt.strftime("%I:%M %p").fillna("—")
-    df["leave_type"]     = df["leave_type"].fillna("")
+    # Break Hrs: span(clock-out − clock-in) minus worked hours
+    def _span(fi, lo):
+        if pd.isna(fi) or pd.isna(lo):
+            return float("nan")
+        return (lo - fi).total_seconds() / 3600
+
+    span_hrs = pd.Series(
+        [_span(fi, lo) for fi, lo in zip(first_ts, last_ts)], index=df.index
+    )
+    df["Break Hrs"] = (span_hrs - df["hours_logged"].astype(float)).clip(lower=0).round(2)
+
+    df["first_clock_in"] = first_ts.map(_to_ist_str)
+    df["last_clock_out"]  = last_ts.map(_to_ist_str)
+    df["leave_type"]      = df["leave_type"].fillna("")
 
     df = df.rename(columns={
         "hours_logged":   "Total Hours",
@@ -628,8 +666,8 @@ with tab1:
                 })
             st.dataframe(pd.DataFrame(_rows_info), use_container_width=True, hide_index=True)
 
-            # Step 2 — exact pandas vectorised pipeline (same as load_daily_snapshot, no cache)
-            st.caption("**Step 2 — Vectorised pandas pipeline** (same logic as load_daily_snapshot, no cache)")
+            # Step 2 — compare vectorised vs map-based pipeline
+            st.caption("**Step 2 — Vectorised (old) vs .map() (new) pipeline**")
             _rows2 = sb.table("daily_snapshots").select(
                 "snapshot_date, hours_logged, session_count, first_clock_in, "
                 "last_clock_out, leave_type, pulled_at, "
@@ -638,14 +676,18 @@ with tab1:
             _df2 = pd.DataFrame(_rows2.data)
             if not _df2.empty:
                 _df2, _emp2 = _flatten_employees(_df2)
+                st.caption(f"last_clock_out dtype after flatten: **{_df2['last_clock_out'].dtype}**")
+                # Old vectorised path
                 _last_dt2 = pd.to_datetime(_df2["last_clock_out"], utc=True, errors="coerce")
                 _df2["co_pandas"] = (
                     _last_dt2.dt.tz_convert("Asia/Kolkata")
                               .dt.strftime("%I:%M %p")
                               .fillna("—")
                 )
+                # New map path (uses scalar _parse_utc / _to_ist_str)
+                _df2["co_map"] = _df2["last_clock_out"].map(_to_ist_str)
                 st.dataframe(
-                    _df2[["Employee", "last_clock_out", "co_pandas"]],
+                    _df2[["Employee", "last_clock_out", "co_pandas", "co_map"]],
                     use_container_width=True, hide_index=True,
                 )
         # ─────────────────────────────────────────────────────────────────────
