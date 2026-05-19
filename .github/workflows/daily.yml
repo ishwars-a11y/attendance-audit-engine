@@ -7,7 +7,12 @@ on:
     - cron: "30 11 * * 1-5"  #  5:00 PM IST
     - cron: "30 15 * * 1-5"  #  9:00 PM IST
     - cron: "30 17 * * 1-5"  # 11:00 PM IST (final)
-  workflow_dispatch:  # allows manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to process (YYYY-MM-DD). Leave blank to use today.'
+        required: false
+        default: ''
   push:
     branches: [main]   # keep-alive: any push resets GitHub's inactivity timer
 
@@ -32,4 +37,9 @@ jobs:
           JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python main.py
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            python main.py --date ${{ github.event.inputs.date }}
+          else
+            python main.py
+          fi
