@@ -299,7 +299,7 @@ def _fmt_hrs(h) -> str:
 # Data loaders
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_daily_snapshot(snap_date: str) -> tuple[pd.DataFrame, str | None]:
     """Returns (df, last_synced_ist_str). last_synced is None when no data exists."""
     rows = (
@@ -597,6 +597,10 @@ with tab1:
 
     # ── Day view ─────────────────────────────────────────────────────────────
     if gran == "day":
+        if start == today:
+            if st.button("🔄 Refresh", key="att_refresh"):
+                load_daily_snapshot.clear()
+                st.rerun()
         df, last_synced = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")

@@ -13,7 +13,7 @@ import json
 import re
 import time
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -189,17 +189,41 @@ class JibbleClient:
             # Clock-in / clock-out
             first_clock_in       = daily.get(TS_FIRST_IN_TS)  # UTC str or None
             last_clock_out       = daily.get(TS_LAST_OUT_TS)  # UTC str or None
+            last_out_local       = daily.get(TS_LAST_OUT)      # local time str or None
             has_missing_clockout = (
-                first_clock_in is not None and daily.get(TS_LAST_OUT) is None
+                first_clock_in is not None and last_out_local is None
             )
 
-            # Fallback: if Jibble omits firstInTimestamp (e.g. manually-entered sessions)
+            # Fallback A: Jibble sometimes omits lastOutTimestamp (UTC) even when lastOut
+            # (local time string, e.g. "8:02 PM") is present.  Derive the UTC ISO timestamp
+            # from lastOut + target_date + IST offset so the dashboard can display it.
+            if last_clock_out is None and last_out_local:
+                try:
+                    from datetime import datetime as _dt
+                    import re as _re
+                    # lastOut format: "8:02 PM" or "08:02 PM"
+                    m = _re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)", last_out_local.strip(), _re.I)
+                    if m:
+                        hh, mm, ampm = int(m.group(1)), int(m.group(2)), m.group(3).upper()
+                        if ampm == "PM" and hh != 12:
+                            hh += 12
+                        elif ampm == "AM" and hh == 12:
+                            hh = 0
+                        # IST = UTC + 5h30m
+                        ist_dt = _dt(target_date.year, target_date.month, target_date.day,
+                                     hh, mm, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+                        last_clock_out = ist_dt.astimezone(timezone.utc).isoformat()
+                        logger.debug(f"  {member_id}: last_clock_out derived from lastOut local string")
+                except Exception:
+                    pass
+
+            # Fallback B: if Jibble omits firstInTimestamp (e.g. manually-entered sessions)
             # but we have a clock-out and hours, derive clock-in = last_clock_out − hours_logged.
             # Exact for single-session days; slightly off when breaks exist.
             if first_clock_in is None and last_clock_out is not None and hours_logged > 0:
-                from datetime import datetime, timedelta
+                from datetime import datetime as _dt2
                 try:
-                    lo = datetime.fromisoformat(last_clock_out.replace("Z", "+00:00"))
+                    lo = _dt2.fromisoformat(last_clock_out.replace("Z", "+00:00"))
                     first_clock_in = (lo - timedelta(hours=hours_logged)).isoformat()
                     logger.debug(f"  {member_id}: first_clock_in derived from lastOut − hours")
                 except Exception:

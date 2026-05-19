@@ -13,7 +13,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -80,7 +80,7 @@ def run_for_date(target_date: date):
             "first_clock_in": first_clock_in_str,
             "last_clock_out": last_clock_out_str,
             "leave_type":     leave_type,
-            "pulled_at":      "now()",
+            "pulled_at":      datetime.now(timezone.utc).isoformat(),
         })
 
         is_full_time       = emp["employment_type"] == "full_time"
