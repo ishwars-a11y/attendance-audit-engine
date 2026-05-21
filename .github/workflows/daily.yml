@@ -14,14 +14,11 @@ on:
         required: false
         default: ''
   push:
-    branches: [main]   # keepalive only — see keepalive job below
+    branches: [main]
 
 jobs:
-
-  # ── Engine — runs on schedule and manual dispatch only ─────────────────────
   run-engine:
     runs-on: ubuntu-latest
-    if: github.event_name != 'push'
 
     steps:
       - uses: actions/checkout@v4
@@ -46,10 +43,3 @@ jobs:
           else
             python main.py
           fi
-
-  # ── Keepalive — fires on every push to prevent GitHub disabling the schedule ─
-  keepalive:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    steps:
-      - run: echo "Keepalive ping — no engine run on code push"
