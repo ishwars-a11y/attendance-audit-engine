@@ -646,7 +646,7 @@ def _heat_count(val):
 # Page header
 # ---------------------------------------------------------------------------
 
-_hdr_col, _sync_col = st.columns([6, 2])
+_hdr_col, _sync_col, _ref_col = st.columns([5, 2, 1])
 _hdr_col.markdown("## 📋 Attendance Dashboard")
 _last_synced_global = load_last_synced()
 if _last_synced_global:
@@ -655,6 +655,15 @@ if _last_synced_global:
         f'⏱ Engine last synced: <b>{_last_synced_global} IST</b></div>',
         unsafe_allow_html=True,
     )
+if _ref_col.button("🔄", key="global_refresh", help="Refresh all data"):
+    load_daily_snapshot.clear()
+    load_last_synced.clear()
+    load_weekly_summary.clear()
+    load_current_week.clear()
+    load_monthly_summary.clear()
+    load_anomalies.clear()
+    load_anomaly_summary.clear()
+    st.rerun()
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
@@ -676,11 +685,6 @@ with tab1:
 
     # ── Day view ─────────────────────────────────────────────────────────────
     if gran == "day":
-        if st.button("🔄 Refresh", key="att_refresh"):
-            load_daily_snapshot.clear()
-            load_last_synced.clear()
-            st.rerun()
-
         df = load_daily_snapshot(start_str)
         if df.empty:
             st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
