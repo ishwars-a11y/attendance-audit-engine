@@ -334,6 +334,70 @@ class JibbleClient:
         except Exception as e:
             return 0, f"{type(e).__name__}: {e}"
 
+    def probe_member_leave(self, jibble_name: str, from_date: date, to_date: date):
+        """
+        Dump the raw `timeOff` section of the Jibble Timesheets response for a
+        specific member across a date range.  Use this to diagnose why leave days
+        are not being captured (e.g. only 2/5 days showing leave_type).
+
+        Usage:
+            python main.py --probe-member "Shaik Shahbaaz Alam" \\
+                           --from 2026-05-11 --to 2026-05-15
+        """
+        print(f"\n=== probe_member_leave: {jibble_name!r}  {from_date} → {to_date} ===\n")
+
+        current = from_date
+        while current <= to_date:
+            if current.weekday() >= 5:
+                current += timedelta(days=1)
+                continue
+
+            raw     = self._get(self.TIME_BASE, "/v1/Timesheets",
+                                params={"date": current.isoformat()})
+            records = raw.get("value", []) if isinstance(raw, dict) else raw
+
+            found = False
+            for person in records:
+                # Match by name inside person object (TimesheetsSummary-style)
+                # or fall back to checking member name via /People lookup
+                daily_entries = person.get(TS_DAILY, [])
+                daily = next(
+                    (d for d in daily_entries if d.get(TS_DAILY_DATE) == current.isoformat()),
+                    daily_entries[0] if daily_entries else {},
+                )
+                # We don't have the name here easily; look for a person whose
+                # daily entry has non-empty timeOff — print ALL entries so the
+                # caller can correlate by personId.
+                member_id = person.get(TS_MEMBER_ID, "?")
+                time_off  = daily.get(TS_TIME_OFF, {})
+                tracked   = daily.get(TS_TRACKED, {})
+                worked    = tracked.get(TS_WORKED, "PT0S")
+                last_out  = daily.get(TS_LAST_OUT)
+                print(f"  {current}  personId={member_id}"
+                      f"  worked={worked}"
+                      f"  lastOut={last_out!r}"
+                      f"  timeOff={json.dumps(time_off)}")
+                found = True
+
+            if not found:
+                print(f"  {current}  (no records returned)")
+
+            current += timedelta(days=1)
+
+        # Also probe for dedicated leave / time-off endpoints
+        print(f"\n=== Leave endpoint discovery ===")
+        for base_label, base_url in [("time-attendance", self.TIME_BASE),
+                                      ("workspace",        self.WORKSPACE_BASE)]:
+            for path in ["/v1/TimeOff", "/v1/Leaves", "/v1/LeaveRequests",
+                         "/v1/TimeOffRequests", "/v1/Absences"]:
+                status, body = self._raw(base_url, path,
+                                         params={"from": from_date.isoformat(),
+                                                 "to":   to_date.isoformat()})
+                marker = "✓" if status == 200 else f"✗ {status}"
+                print(f"  {marker}  {base_label}{path}")
+                if status == 200:
+                    print(f"       {body[:300]}")
+
     def probe(self):
         yesterday = date.today() - timedelta(days=1)
         while yesterday.weekday() >= 5:

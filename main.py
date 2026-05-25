@@ -249,6 +249,9 @@ def main():
     parser = argparse.ArgumentParser(description="Attendance Audit Engine")
     parser.add_argument("--probe", action="store_true",
                         help="Discover Jibble endpoint paths + verify field names")
+    parser.add_argument("--probe-member", type=str, default=None, metavar="NAME",
+                        help="Dump raw Jibble timeOff data for a specific employee over "
+                             "--from / --to range.  Use to diagnose missing leave days.")
     parser.add_argument("--sync-employees", action="store_true",
                         help="Sync employee list from Jibble to Supabase")
     parser.add_argument("--date", type=str, default=None,
@@ -266,6 +269,18 @@ def main():
     if args.probe:
         from engine.jibble import JibbleClient
         JibbleClient().probe()
+        return
+
+    if args.probe_member:
+        from engine.jibble import JibbleClient
+        if not args.from_date or not args.to_date:
+            print("--probe-member requires --from and --to")
+            sys.exit(1)
+        JibbleClient().probe_member_leave(
+            args.probe_member,
+            date.fromisoformat(args.from_date),
+            date.fromisoformat(args.to_date),
+        )
         return
 
     if args.sync_employees:
