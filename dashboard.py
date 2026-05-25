@@ -393,35 +393,57 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out"]].reset_index(drop=True)
 
 
-@st.cache_data(ttl=300)
-def load_weekly_summary(week_start: str) -> pd.DataFrame:
+@st.cache_data(ttl=60)
+def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
+    """
+    Compute weekly summary LIVE from daily_snapshots — never reads the cached
+    weekly_summaries table, so retroactive leave approvals are reflected the
+    moment the engine re-syncs those days regardless of how old the week is.
+    """
     rows = (
-        sb.table("weekly_summaries")
-        .select("week_start, week_end, total_hours, effective_target, deficit, leave_days, employees(jibble_name, employment_type)")
-        .eq("week_start", week_start)
+        sb.table("daily_snapshots")
+        .select("snapshot_date, hours_logged, leave_type, "
+                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs)")
+        .gte("snapshot_date", week_start)
+        .lte("snapshot_date", week_end)
         .execute()
     )
     df = pd.DataFrame(rows.data)
     if df.empty:
         return df
 
-    df, _ = _flatten_employees(df)
+    emp_cols = pd.json_normalize(df["employees"])
+    df = df.drop(columns=["employees"])
+    df["Employee"]       = emp_cols["jibble_name"]
+    df["weekly_target"]  = emp_cols["weekly_target_hrs"].astype(float)
+    df["daily_target"]   = emp_cols["daily_target_hrs"].astype(float)
+    df["leave_type"]     = df["leave_type"].fillna("")
+    df["hours_logged"]   = df["hours_logged"].astype(float)
+
+    agg = (
+        df.groupby("Employee")
+        .agg(
+            Hours        = ("hours_logged", "sum"),
+            Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
+            weekly_target= ("weekly_target", "first"),
+            daily_target = ("daily_target",  "first"),
+        )
+        .reset_index()
+    )
+
+    agg["Target"]  = (agg["weekly_target"] - agg["Leave_Days"] * agg["daily_target"]).clip(lower=0).round(2)
+    agg["Deficit"] = (agg["Target"] - agg["Hours"]).clip(lower=0).round(2)
 
     def _status(row):
-        if row["total_hours"] >= row["effective_target"]:     return "Met"
-        if row["total_hours"] >= row["effective_target"] - 4: return "At Risk"
+        if row["Hours"] >= row["Target"]:     return "Met"
+        if row["Hours"] >= row["Target"] - 4: return "At Risk"
         return "Deficit"
 
-    df["Status"] = df.apply(_status, axis=1)
+    agg["Status"] = agg.apply(_status, axis=1)
     order = {"Deficit": 0, "At Risk": 1, "Met": 2}
-    df = df.sort_values("Status", key=lambda s: s.map(order))
-
-    df = df.rename(columns={
-        "total_hours": "Hours", "effective_target": "Target",
-        "deficit": "Deficit", "leave_days": "Leave Days",
-    })
-    # Status first so it's never hidden off-screen
-    return df[["Employee", "Status", "Hours", "Target", "Deficit", "Leave Days"]].reset_index(drop=True)
+    agg = agg.sort_values("Status", key=lambda s: s.map(order))
+    agg = agg.rename(columns={"Leave_Days": "Leave Days"})
+    return agg[["Employee", "Status", "Hours", "Target", "Deficit", "Leave Days"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)
@@ -741,12 +763,12 @@ with tab1:
                 st.dataframe(styled, use_container_width=True, hide_index=True)
 
         else:
-            df = load_weekly_summary(start_str)
+            df = load_weekly_summary(start_str, end_str)
             if df.empty:
                 st.info(
-                    f"No weekly summary for the week of {start.strftime('%d %b %Y')}. "
+                    f"No snapshot data for the week of {start.strftime('%d %b %Y')}. "
                     "This week may not have been processed yet — try running: "
-                    "`python main.py --date " + start_str + "`"
+                    "`python main.py --date " + end_str + "`"
                 )
             else:
                 deficit_emp = df[df["Status"] == "Deficit"]
