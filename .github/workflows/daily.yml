@@ -53,6 +53,7 @@ jobs:
             python main.py --lookback 7
 
           else
-            # Push-triggered: sync today only (fast, keeps the schedule alive)
-            python main.py
+            # Push-triggered: same as scheduled — re-sync the past 7 working days
+            # so any retroactive leave approved since the last cron is caught immediately.
+            python main.py --lookback 7
           fi
