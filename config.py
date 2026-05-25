@@ -81,6 +81,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "departed_date": "2026-05-19",   # Last working day
     },
     "Arfath Tade": {
         "display_name": "Arfath",
@@ -135,6 +136,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-05-05",   # First working day
     },
     "Samiksha Patil": {
         "display_name": "Samiksha",

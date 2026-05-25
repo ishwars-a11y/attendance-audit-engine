@@ -37,6 +37,29 @@ def _parse_utc(ts_str: str | None):
         return None
 
 
+def _parse_date(val) -> date | None:
+    """Parse a date value (str 'YYYY-MM-DD' or date or None) to a date object."""
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    try:
+        return date.fromisoformat(str(val)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _was_active_on(emp: dict, target_date: date) -> bool:
+    """True if an employee is within their [joined_date, departed_date] range on target_date."""
+    joined   = _parse_date(emp.get("joined_date"))
+    departed = _parse_date(emp.get("departed_date"))
+    if joined and target_date < joined:
+        return False
+    if departed and target_date > departed:
+        return False
+    return True
+
+
 def run_for_date(target_date: date):
     from engine.jibble import JibbleClient
     from engine import rules, db
@@ -59,6 +82,12 @@ def run_for_date(target_date: date):
 
     for emp in employees:
         mid = emp["member_id"]
+
+        # Skip employees who hadn't joined yet or have already departed on target_date.
+        if not _was_active_on(emp, target_date):
+            logger.debug(f"  Skipping {emp.get('jibble_name', mid)} — outside active range on {target_date}")
+            continue
+
         ts  = ts_by_member.get(mid, {})
 
         hours_logged         = ts.get("hours_logged", 0.0)
@@ -173,12 +202,25 @@ def _run_weekly_summary(friday: date, employees: list[dict]):
 
     for emp in employees:
         mid       = emp["member_id"]
+
+        # Pro-rate the weekly target by the working days in [monday, friday] that
+        # fall within the employee's [joined_date, departed_date] active range.
+        # Employees with no overlap at all are skipped entirely for this week.
+        active_days = sum(
+            1 for i in range(5)
+            if _was_active_on(emp, monday + timedelta(days=i))
+        )
+        if active_days == 0:
+            continue
+
         snapshots = db.get_snapshots_for_week(mid, monday, friday)
 
         total_hours      = sum(float(s["hours_logged"]) for s in snapshots)
         leave_days       = sum(1 for s in snapshots if s.get("leave_type") is not None)
-        effective_target = rules.effective_weekly_target(
-            emp["weekly_target_hrs"], emp["daily_target_hrs"], leave_days
+        # Effective target = active_days × daily_target − leave_days × daily_target
+        effective_target = max(
+            0.0,
+            (active_days - leave_days) * emp["daily_target_hrs"]
         )
         deficit = max(0.0, effective_target - total_hours)
 
@@ -235,6 +277,8 @@ def sync_employees():
             "timezone":          config["timezone"],
             "is_excluded":       config.get("is_excluded", False),
             "is_active":         config.get("is_active", True),
+            "joined_date":       config.get("joined_date"),     # None = joined before tracking
+            "departed_date":     config.get("departed_date"),   # None = still active
         })
 
     db.upsert_employees(rows)

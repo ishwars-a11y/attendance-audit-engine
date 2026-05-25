@@ -10,8 +10,14 @@ create table if not exists employees (
     time_window_rules boolean not null default false,   -- DEPRECATED (unused since 2026-05-25). Safe to drop: ALTER TABLE employees DROP COLUMN time_window_rules;
     timezone         text not null default 'Asia/Kolkata',
     is_excluded      boolean not null default false,
-    is_active        boolean not null default true
+    is_active        boolean not null default true,
+    joined_date      date,   -- NULL = joined before tracking started
+    departed_date    date    -- NULL = still active
 );
+
+-- Migration for existing databases (idempotent):
+-- alter table employees add column if not exists joined_date date;
+-- alter table employees add column if not exists departed_date date;
 
 create table if not exists daily_snapshots (
     id               bigserial primary key,

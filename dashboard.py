@@ -286,6 +286,44 @@ def _flatten_employees(df: pd.DataFrame):
     return df, emp
 
 
+def _parse_date(val):
+    """Parse a Supabase date value to a python date object, or None."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return date.fromisoformat(str(val)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _filter_active_on(df: pd.DataFrame, snap_date_col: str = "snapshot_date") -> pd.DataFrame:
+    """
+    Drop rows where the snapshot_date is outside the employee's
+    [joined_date, departed_date] active range.  Caller must have already
+    flattened employees() and have _joined / _departed columns.
+    """
+    if df.empty or "_joined" not in df.columns:
+        return df
+    snap_dates = pd.to_datetime(df[snap_date_col]).dt.date
+    join_ok    = df["_joined"].isna()    | (snap_dates >= df["_joined"])
+    depart_ok  = df["_departed"].isna()  | (snap_dates <= df["_departed"])
+    return df[join_ok & depart_ok].copy()
+
+
+def _working_days_active(monday: date, friday: date, joined, departed) -> int:
+    """Count Mon-Fri days in [monday, friday] within the employee's active range."""
+    return sum(
+        1 for i in range(5)
+        if (joined is None or monday + timedelta(days=i) >= joined)
+        and (departed is None or monday + timedelta(days=i) <= departed)
+    )
+
+
 def _fmt_hrs(h) -> str:
     try:
         h = float(h)
@@ -365,7 +403,8 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     """Returns formatted attendance DataFrame for snap_date."""
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, pulled_at, employees(jibble_name, employment_type)")
+        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, pulled_at, "
+                "employees(jibble_name, employment_type, joined_date, departed_date)")
         .eq("snapshot_date", snap_date)
         .execute()
     )
@@ -373,7 +412,13 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df, _ = _flatten_employees(df)
+    df, emp_raw = _flatten_employees(df)
+    df["_joined"]   = emp_raw["joined_date"].map(_parse_date)
+    df["_departed"] = emp_raw["departed_date"].map(_parse_date)
+    df = _filter_active_on(df)
+    df = df.drop(columns=["_joined", "_departed"])
+    if df.empty:
+        return df
 
     # Parse timestamps element-by-element via the scalar path.
     # pd.to_datetime(series, utc=True) can silently coerce valid timezone-aware
@@ -415,11 +460,13 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     Compute weekly summary LIVE from daily_snapshots — never reads the cached
     weekly_summaries table, so retroactive leave approvals are reflected the
     moment the engine re-syncs those days regardless of how old the week is.
+    Targets are pro-rated by each employee's active range so joiners /
+    departures within the week are handled correctly.
     """
     rows = (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
-                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs)")
+                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", week_start)
         .lte("snapshot_date", week_end)
         .execute()
@@ -433,8 +480,18 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     df["Employee"]       = emp_cols["jibble_name"]
     df["weekly_target"]  = emp_cols["weekly_target_hrs"].astype(float)
     df["daily_target"]   = emp_cols["daily_target_hrs"].astype(float)
+    df["_joined"]        = emp_cols["joined_date"].map(_parse_date)
+    df["_departed"]      = emp_cols["departed_date"].map(_parse_date)
     df["leave_type"]     = df["leave_type"].fillna("")
     df["hours_logged"]   = df["hours_logged"].astype(float)
+
+    # Drop snapshot rows outside each employee's active range
+    df = _filter_active_on(df)
+    if df.empty:
+        return df
+
+    monday = date.fromisoformat(week_start)
+    friday = date.fromisoformat(week_end)
 
     agg = (
         df.groupby("Employee")
@@ -443,11 +500,20 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
             Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
             weekly_target= ("weekly_target", "first"),
             daily_target = ("daily_target",  "first"),
+            _joined      = ("_joined",       "first"),
+            _departed    = ("_departed",     "first"),
         )
         .reset_index()
     )
 
-    agg["Target"]  = (agg["weekly_target"] - agg["Leave_Days"] * agg["daily_target"]).clip(lower=0).round(2)
+    # Pro-rated target: working days within active range × daily_target,
+    # minus leave days within that window.
+    agg["active_days"] = agg.apply(
+        lambda r: _working_days_active(monday, friday, r["_joined"], r["_departed"]),
+        axis=1,
+    )
+    agg = agg[agg["active_days"] > 0]   # drop employees with no overlap
+    agg["Target"]  = ((agg["active_days"] - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
     agg["Deficit"] = (agg["Target"] - agg["Hours"]).clip(lower=0).round(2)
 
     def _status(row):
@@ -469,7 +535,8 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, leave_type, employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs)")
+        .select("snapshot_date, hours_logged, leave_type, "
+                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", monday)
         .lte("snapshot_date", through)
         .execute()
@@ -483,9 +550,16 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     df["Employee"]      = emp_cols["jibble_name"]
     df["weekly_target"] = emp_cols["weekly_target_hrs"].astype(float)
     df["daily_target"]  = emp_cols["daily_target_hrs"].astype(float)
+    df["_joined"]       = emp_cols["joined_date"].map(_parse_date)
+    df["_departed"]     = emp_cols["departed_date"].map(_parse_date)
     df["leave_type"]    = df["leave_type"].fillna("")
 
+    df = _filter_active_on(df)
+    if df.empty:
+        return df
+
     monday_date   = date.fromisoformat(monday)
+    friday_date   = monday_date + timedelta(days=4)
     today         = date.today()
     days_elapsed  = sum(
         1 for i in range((today - monday_date).days + 1)
@@ -500,11 +574,19 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
             Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
             weekly_target= ("weekly_target", "first"),
             daily_target = ("daily_target",  "first"),
+            _joined      = ("_joined",       "first"),
+            _departed    = ("_departed",     "first"),
         )
         .reset_index()
     )
 
-    agg["Target"]    = (agg["weekly_target"] - agg["Leave_Days"] * agg["daily_target"]).clip(lower=0)
+    # Pro-rated target uses active working days within Mon-Fri
+    agg["active_days"] = agg.apply(
+        lambda r: _working_days_active(monday_date, friday_date, r["_joined"], r["_departed"]),
+        axis=1,
+    )
+    agg = agg[agg["active_days"] > 0]
+    agg["Target"]    = ((agg["active_days"] - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0)
     agg["Projected"] = (agg["Hours"] / days_elapsed * 5).round(2)
     agg["Days Left"] = max(5 - days_elapsed, 0)
 
@@ -525,7 +607,8 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     rows = (
         sb.table("daily_snapshots")
-        .select("snapshot_date, hours_logged, leave_type, employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs)")
+        .select("snapshot_date, hours_logged, leave_type, "
+                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", start)
         .lte("snapshot_date", end)
         .execute()
@@ -538,10 +621,31 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     df = df.drop(columns=["employees"])
     df["Employee"]     = emp_cols["jibble_name"]
     df["daily_target"] = emp_cols["daily_target_hrs"].astype(float)
+    df["_joined"]      = emp_cols["joined_date"].map(_parse_date)
+    df["_departed"]    = emp_cols["departed_date"].map(_parse_date)
     df["leave_type"]   = df["leave_type"].fillna("")
     df["hours_logged"] = df["hours_logged"].astype(float)
 
-    days_tracked = len({r["snapshot_date"] for r in rows.data})
+    # Drop snapshot rows outside each employee's active range
+    df = _filter_active_on(df)
+    if df.empty:
+        return df
+
+    # Compute Expected Hrs per-employee as (working_days in active range ∩ [start,end] − leave_days) × daily_target.
+    start_d = date.fromisoformat(start)
+    end_d   = date.fromisoformat(end)
+
+    def _working_days_in_range(joined, departed) -> int:
+        """Count Mon-Fri days in [start_d, end_d] within employee's active range."""
+        lo = max(start_d, joined)   if joined   else start_d
+        hi = min(end_d,   departed) if departed else end_d
+        if hi < lo:
+            return 0
+        return sum(
+            1 for i in range((hi - lo).days + 1)
+            if (lo + timedelta(days=i)).weekday() < 5
+        )
+
     agg = (
         df.groupby("Employee")
         .agg(
@@ -550,10 +654,16 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
             Days_Absent  = ("hours_logged", lambda x: ((x == 0) & (df.loc[x.index, "leave_type"] == "")).sum()),
             Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
             daily_target = ("daily_target", "first"),
+            _joined      = ("_joined",       "first"),
+            _departed    = ("_departed",     "first"),
         )
         .reset_index()
     )
-    agg["Expected Hrs"] = ((days_tracked - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
+    agg["working_days"] = agg.apply(
+        lambda r: _working_days_in_range(r["_joined"], r["_departed"]), axis=1
+    )
+    agg = agg[agg["working_days"] > 0]
+    agg["Expected Hrs"] = ((agg["working_days"] - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
     agg["Deficit"]      = (agg["Expected Hrs"] - agg["Total_Hours"]).clip(lower=0).round(2)
     agg = agg.sort_values("Deficit", ascending=False)
     agg = agg.rename(columns={
@@ -567,7 +677,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
 def load_anomalies(start: str, end: str) -> pd.DataFrame:
     rows = (
         sb.table("anomalies")
-        .select("anomaly_date, anomaly_type, detail, employees(jibble_name)")
+        .select("anomaly_date, anomaly_type, detail, employees(jibble_name, joined_date, departed_date)")
         .gte("anomaly_date", start)
         .lte("anomaly_date", end)
         .order("anomaly_date", desc=True)
@@ -580,11 +690,18 @@ def load_anomalies(start: str, end: str) -> pd.DataFrame:
 
     emp = pd.json_normalize(df["employees"])
     df  = df.drop(columns=["employees"])
-    df["Employee"] = emp["jibble_name"]
+    df["Employee"]  = emp["jibble_name"]
+    df["_joined"]   = emp["joined_date"].map(_parse_date)
+    df["_departed"] = emp["departed_date"].map(_parse_date)
     df = df.rename(columns={"anomaly_date": "Date", "anomaly_type": "Type", "detail": "Detail"})
+
     # Hide deprecated anomaly types (Excessive Breaks, Early Departure) — they
     # are no longer generated but historical rows still exist.
     df = df[~df["Type"].isin(HIDDEN_ANOMALY_TYPES)]
+    # Hide anomalies outside the employee's active range (e.g. stale Absence
+    # flags for someone who'd already left or hadn't joined yet)
+    df = _filter_active_on(df, snap_date_col="Date")
+    df = df.drop(columns=["_joined", "_departed"])
     if df.empty:
         return df
     df["_sev"] = df["Type"].map(ANOMALY_SEVERITY).fillna(99)
