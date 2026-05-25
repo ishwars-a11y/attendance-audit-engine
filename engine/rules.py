@@ -5,7 +5,7 @@ All functions return a (flagged: bool, detail: str) tuple.
 detail is the human-readable string shown in the dashboard's "Detail" column.
 """
 
-from datetime import datetime, time as time_type
+from datetime import date, datetime, time as time_type
 from typing import Optional
 import pytz
 
@@ -13,6 +13,9 @@ from config import (
     IST,
     WORK_WINDOW_START_HOUR,
     WORK_WINDOW_START_MINUTE,
+    OLD_WORK_WINDOW_START_HOUR,
+    OLD_WORK_WINDOW_START_MINUTE,
+    SHIFT_CHANGE_DATE,
     EARLY_DEPARTURE_HOUR,
     MAX_BREAK_HOURS,
     EXCESSIVE_HOURS_THRESHOLD,
@@ -21,7 +24,12 @@ from config import (
     CHRONIC_LATE_THRESHOLD,
 )
 
-_LATE_CUTOFF = time_type(WORK_WINDOW_START_HOUR, WORK_WINDOW_START_MINUTE)
+
+def _late_cutoff_for(snapshot_date: date) -> time_type:
+    """Date-aware late-start cutoff (handles the 2026-05-25 shift change)."""
+    if snapshot_date < SHIFT_CHANGE_DATE:
+        return time_type(OLD_WORK_WINDOW_START_HOUR, OLD_WORK_WINDOW_START_MINUTE)
+    return time_type(WORK_WINDOW_START_HOUR, WORK_WINDOW_START_MINUTE)
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +77,17 @@ def check_excessive_breaks(
 def check_late_no_start(
     first_clock_in: Optional[datetime],
     hours_logged: float,
+    snapshot_date: date,
     has_full_day_leave: bool,
     has_am_half_day_leave: bool,
     is_full_time: bool,
 ) -> tuple[bool, str]:
-    """Flag if first clock-in is at or after 11:10 AM IST and no approved leave."""
+    """
+    Flag if first clock-in is at or after the day's late-start cutoff and no approved leave.
+    Cutoff is date-aware:
+      - snapshot_date < SHIFT_CHANGE_DATE → 11:10 AM IST
+      - snapshot_date >= SHIFT_CHANGE_DATE → 10:10 AM IST
+    """
     if not is_full_time:
         return False, ""
     if has_full_day_leave or has_am_half_day_leave:
@@ -83,9 +97,10 @@ def check_late_no_start(
     if first_clock_in is None:
         return True, "No clock-in recorded"
 
+    cutoff = _late_cutoff_for(snapshot_date)
     clock_in_ist = first_clock_in.astimezone(IST)
-    if clock_in_ist.time() >= _LATE_CUTOFF:
-        return True, f"First clock-in at {_fmt(first_clock_in)} IST"
+    if clock_in_ist.time() >= cutoff:
+        return True, f"First clock-in at {_fmt(first_clock_in)} IST (cutoff {cutoff.strftime('%I:%M %p')})"
     return False, ""
 
 

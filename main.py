@@ -68,6 +68,8 @@ def run_for_date(target_date: date):
         has_missing_clockout = ts.get("has_missing_clockout", False)
         leave_type           = ts.get("leave_type")
         is_holiday           = ts.get("is_holiday", False)
+        is_am_half_day       = ts.get("is_am_half_day", False)
+        is_partial_leave     = ts.get("is_partial_leave", False)
 
         first_clock_in_dt  = _parse_utc(first_clock_in_str)
         last_clock_out_dt  = _parse_utc(last_clock_out_str)
@@ -93,8 +95,8 @@ def run_for_date(target_date: date):
         is_full_time       = emp["employment_type"] == "full_time"
         daily_target_hrs   = emp.get("daily_target_hrs", 8)
         has_leave          = leave_type is not None and not is_holiday
-        has_full_day_leave = has_leave    # half-day AM not yet detectable; conservative default
-        has_am_half_day    = False        # update if Jibble exposes half-day type
+        has_full_day_leave = has_leave and not is_partial_leave
+        has_am_half_day    = is_am_half_day
 
         # Consecutive absence: look up the previous working day's snapshot
         prev_day = target_date - timedelta(days=1)
@@ -115,19 +117,16 @@ def run_for_date(target_date: date):
               *rules.check_consecutive_absence(is_absent_today, was_absent_prev))
         _flag(mid, target_date, "Excessive Hours",
               *rules.check_excessive_hours(hours_logged, is_full_time))
-        _flag(mid, target_date, "Excessive Breaks",
-              *rules.check_excessive_breaks(session_count, is_full_time))
         _flag(mid, target_date, "Late / No Start",
               *rules.check_late_no_start(
-                  first_clock_in_dt, hours_logged,
+                  first_clock_in_dt, hours_logged, target_date,
                   has_full_day_leave, has_am_half_day, is_full_time))
-        _flag(mid, target_date, "Early Departure",
-              *rules.check_early_departure(
-                  last_clock_out_dt, hours_logged, daily_target_hrs,
-                  has_full_day_leave, is_full_time))
         _flag(mid, target_date, "Long Breaks",
               *rules.check_long_breaks(
                   first_clock_in_dt, last_clock_out_dt, hours_logged, is_full_time))
+        # "Excessive Breaks" and "Early Departure" checks removed as low-signal /
+        # high-noise.  Historical anomalies of those types remain in the DB but
+        # are filtered out of the dashboard.
 
     # --- Weekly summary on Fridays ---
     if target_date.weekday() == 4:
@@ -233,7 +232,6 @@ def sync_employees():
             "employment_type":  config["employment_type"],
             "weekly_target_hrs": config["weekly_target_hrs"],
             "daily_target_hrs":  config["daily_target_hrs"],
-            "time_window_rules": config["time_window_rules"],
             "timezone":          config["timezone"],
             "is_excluded":       config.get("is_excluded", False),
             "is_active":         config.get("is_active", True),

@@ -278,14 +278,21 @@ class JibbleClient:
             time_off   = daily.get(TS_TIME_OFF, {})
             is_holiday = bool(time_off.get(TS_HOLIDAYS))
             leave_type = None
+            is_am_half_day  = False
+            is_partial_leave = False
 
             off_types = time_off.get(TS_OFF_TYPES, [])
             if off_types:
                 # types entries may be dicts with a "name" key, or plain strings
                 first = off_types[0]
-                leave_type = (
-                    first.get("name", "Approved") if isinstance(first, dict) else str(first)
-                )
+                if isinstance(first, dict):
+                    leave_type       = first.get("name", "Approved")
+                    is_partial_leave = bool(first.get("isPartialDayTimeOff", False))
+                    # partOfDay: Jibble returns "Morning" / "Afternoon" (or null for full-day)
+                    part_of_day = (first.get("partOfDay") or "").strip().lower()
+                    is_am_half_day = is_partial_leave and part_of_day in ("morning", "am", "firsthalf")
+                else:
+                    leave_type = str(first)
             elif is_holiday:
                 leave_type = "Public Holiday"
 
@@ -298,6 +305,8 @@ class JibbleClient:
                 "has_missing_clockout": has_missing_clockout,
                 "leave_type":          leave_type,
                 "is_holiday":          is_holiday,
+                "is_partial_leave":    is_partial_leave,
+                "is_am_half_day":      is_am_half_day,
             })
 
         return result

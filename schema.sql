@@ -7,7 +7,7 @@ create table if not exists employees (
     employment_type  text not null check (employment_type in ('full_time', 'part_time')),
     weekly_target_hrs integer not null,
     daily_target_hrs  integer not null,
-    time_window_rules boolean not null default false,
+    time_window_rules boolean not null default false,   -- DEPRECATED (unused since 2026-05-25). Safe to drop: ALTER TABLE employees DROP COLUMN time_window_rules;
     timezone         text not null default 'Asia/Kolkata',
     is_excluded      boolean not null default false,
     is_active        boolean not null default true

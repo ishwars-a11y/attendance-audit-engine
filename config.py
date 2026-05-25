@@ -1,17 +1,37 @@
+from datetime import date
+
 import pytz
 
 # All Jibble timestamps are treated as IST — the Jibble account is configured in IST.
 # If probe output shows UTC timestamps, set JIBBLE_TIMESTAMPS_UTC = True in .env.
 IST = pytz.timezone("Asia/Kolkata")
 
-WORK_WINDOW_START_HOUR   = 11   # 11 AM IST — full-timers only
-WORK_WINDOW_START_MINUTE = 10   # 10-min leeway → flags at 11:10 AM
-EARLY_DEPARTURE_HOUR     = 18   # 6 PM IST — clock-out before this + short hours = early departure
-MAX_BREAK_HOURS          = 2.0  # total break time (span − worked) before flagging
-EXCESSIVE_HOURS_THRESHOLD    = 10  # hours/day before flagging
-EXCESSIVE_SESSIONS_THRESHOLD = 4   # clock-in/clock-out pairs before flagging
-AT_RISK_BUFFER_HRS       = 4    # hours below effective target → "At Risk" (not "Deficit")
-CHRONIC_LATE_THRESHOLD   = 3    # Late/No Start flags in one week → Chronic Late Starter
+# ---------------------------------------------------------------------------
+# Shift timings — date-aware so past days remain evaluated under their
+# correct rule and we don't retroactively flag people as "late".
+#   - Up to 2026-05-24: 11 AM → 8 PM (11:10 AM grace late cutoff)
+#   - From 2026-05-25:  10 AM → 7 PM (10:10 AM grace late cutoff)
+# ---------------------------------------------------------------------------
+SHIFT_CHANGE_DATE = date(2026, 5, 25)
+
+# Current (post-change) shift
+WORK_WINDOW_START_HOUR   = 10
+WORK_WINDOW_START_MINUTE = 10   # 10-min grace → flags at 10:10 AM
+
+# Legacy (pre-change) shift — applied automatically for snapshot_date < SHIFT_CHANGE_DATE
+OLD_WORK_WINDOW_START_HOUR   = 11
+OLD_WORK_WINDOW_START_MINUTE = 10   # flags at 11:10 AM
+
+# EARLY_DEPARTURE_HOUR / EXCESSIVE_SESSIONS_THRESHOLD retained for backward
+# compatibility with historical anomalies but the corresponding checks are
+# no longer run (see main.py).
+EARLY_DEPARTURE_HOUR         = 18   # deprecated
+EXCESSIVE_SESSIONS_THRESHOLD = 4    # deprecated
+
+MAX_BREAK_HOURS           = 2.0  # total break time (span − worked) before flagging
+EXCESSIVE_HOURS_THRESHOLD = 10   # hours/day before flagging
+AT_RISK_BUFFER_HRS        = 4    # hours below effective target → "At Risk" (not "Deficit")
+CHRONIC_LATE_THRESHOLD    = 3    # Late/No Start flags in one week → Chronic Late Starter
 
 # Employee roster — keyed by Jibble name (exact string from /v1/people response).
 # member_id: fill in the values after running: python main.py --probe
@@ -23,7 +43,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -33,7 +52,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -43,7 +61,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -53,7 +70,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -63,7 +79,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -73,7 +88,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -83,7 +97,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -93,7 +106,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -103,7 +115,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -113,7 +124,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -123,7 +133,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -133,7 +142,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -143,7 +151,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -153,7 +160,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 40,
         "daily_target_hrs": 8,
-        "time_window_rules": True,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -163,7 +169,6 @@ EMPLOYEES = {
         "employment_type": "part_time",
         "weekly_target_hrs": 20,
         "daily_target_hrs": 4,
-        "time_window_rules": False,
         "timezone": "Asia/Kolkata",  # Jibble account shows Dubai employee in IST
         "is_excluded": False,
     },
@@ -173,7 +178,6 @@ EMPLOYEES = {
         "employment_type": "part_time",
         "weekly_target_hrs": 20,
         "daily_target_hrs": 4,
-        "time_window_rules": False,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
     },
@@ -183,7 +187,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 0,
         "daily_target_hrs": 0,
-        "time_window_rules": False,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
         "is_active": False,
@@ -194,7 +197,6 @@ EMPLOYEES = {
         "employment_type": "full_time",
         "weekly_target_hrs": 0,
         "daily_target_hrs": 0,
-        "time_window_rules": False,
         "timezone": "Asia/Kolkata",
         "is_excluded": True,
     },
