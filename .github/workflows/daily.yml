@@ -10,9 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: 'Date to process (YYYY-MM-DD). Leave blank to use today.'
+        description: 'Date to process (YYYY-MM-DD). Leave blank for today.'
         required: false
         default: ''
+      lookback:
+        description: 'Re-sync this many working days before the target date (picks up retroactive leave).'
+        required: false
+        default: '0'
   push:
     branches: [main]
 
@@ -39,7 +43,16 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           if [ -n "${{ github.event.inputs.date }}" ]; then
-            python main.py --date "${{ github.event.inputs.date }}"
+            # Manual dispatch with a specific date
+            LOOKBACK="${{ github.event.inputs.lookback }}"
+            python main.py --date "${{ github.event.inputs.date }}" --lookback "${LOOKBACK:-0}"
+
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            # Scheduled cron: also re-sync the past 7 working days so any
+            # retroactive leave approved in Jibble is picked up automatically.
+            python main.py --lookback 7
+
           else
+            # Push-triggered: sync today only (fast, keeps the schedule alive)
             python main.py
           fi

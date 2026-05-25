@@ -252,7 +252,11 @@ def main():
     parser.add_argument("--sync-employees", action="store_true",
                         help="Sync employee list from Jibble to Supabase")
     parser.add_argument("--date", type=str, default=None,
-                        help="Run for a specific date (YYYY-MM-DD). Defaults to yesterday.")
+                        help="Run for a specific date (YYYY-MM-DD). Defaults to today.")
+    parser.add_argument("--lookback", type=int, default=0, metavar="N",
+                        help="Also re-sync the N most recent working days before the "
+                             "target date. Picks up retroactive leave approvals that "
+                             "were entered in Jibble after the original sync.")
     parser.add_argument("--backfill", action="store_true",
                         help="Backfill a date range. Requires --from and --to.")
     parser.add_argument("--from", dest="from_date", type=str)
@@ -280,6 +284,20 @@ def main():
         return
 
     target = date.fromisoformat(args.date) if args.date else date.today()
+
+    if args.lookback > 0:
+        # Collect the N most-recent working days before target (oldest first)
+        # so weekly summaries are (re)computed in chronological order.
+        past_days: list[date] = []
+        d = target - timedelta(days=1)
+        while len(past_days) < args.lookback:
+            if d.weekday() < 5:
+                past_days.append(d)
+            d -= timedelta(days=1)
+        for d in reversed(past_days):
+            logger.info(f"Lookback re-sync: {d}")
+            run_for_date(d)
+
     run_for_date(target)
 
 
