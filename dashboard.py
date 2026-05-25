@@ -505,7 +505,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     return agg[["Employee", "Status", "Hours", "Target", "Projected", "Leave Days", "Days Left"]].reset_index(drop=True)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     rows = (
         sb.table("daily_snapshots")
@@ -547,7 +547,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     return agg[["Employee", "Deficit", "Hours", "Expected Hrs", "Days Present", "Days Absent", "Leave Days"]].reset_index(drop=True)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_anomalies(start: str, end: str) -> pd.DataFrame:
     rows = (
         sb.table("anomalies")
@@ -571,7 +571,7 @@ def load_anomalies(start: str, end: str) -> pd.DataFrame:
     return df[["Date", "Employee", "Type", "Detail"]].reset_index(drop=True)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_anomaly_summary(start: str, end: str) -> pd.DataFrame:
     df = load_anomalies(start, end)
     if df.empty:
