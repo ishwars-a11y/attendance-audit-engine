@@ -48,12 +48,14 @@ jobs:
             python main.py --date "${{ github.event.inputs.date }}" --lookback "${LOOKBACK:-0}"
 
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            # Scheduled cron: also re-sync the past 7 working days so any
+            # Scheduled cron: re-sync the past 30 working days (~6 weeks) so any
             # retroactive leave approved in Jibble is picked up automatically.
-            python main.py --lookback 7
+            # 30 days ensures even late approvals (e.g. leave entered weeks after
+            # the fact) are reflected without manual intervention.
+            python main.py --lookback 30
 
           else
-            # Push-triggered: same as scheduled — re-sync the past 7 working days
+            # Push-triggered: same as scheduled — re-sync the past 30 working days
             # so any retroactive leave approved since the last cron is caught immediately.
-            python main.py --lookback 7
+            python main.py --lookback 30
           fi
