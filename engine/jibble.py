@@ -65,7 +65,7 @@ SUM_STATUS     = "status"             # "Joined" | "Archived" etc.
 
 def _build_session() -> requests.Session:
     session = requests.Session()
-    retry   = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
+    retry   = Retry(total=3, backoff_factor=1, status_forcelist=[408, 429, 500, 502, 503, 504])
     session.mount("https://", HTTPAdapter(max_retries=retry))
     return session
 
