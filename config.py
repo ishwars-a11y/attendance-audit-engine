@@ -137,6 +137,7 @@ EMPLOYEES = {
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
         "joined_date": "2026-05-05",   # First working day
+        "departed_date": "2026-06-04", # Last working day
     },
     "Samiksha Patil": {
         "display_name": "Samiksha",
