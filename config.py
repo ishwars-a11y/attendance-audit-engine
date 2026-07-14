@@ -118,6 +118,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "departed_date": "2026-06-10", # Last working day
     },
     "Prathmesh Gaidhane": {
         "display_name": "Prathmesh",
