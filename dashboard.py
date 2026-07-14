@@ -149,6 +149,13 @@ _WARNING  = {"Chronic Late Starter", "Missing Clock-Out", "Late / No Start"}
 # types are filtered out of the dashboard so they don't distract managers.
 HIDDEN_ANOMALY_TYPES = {"Excessive Breaks", "Early Departure"}
 
+# Leave types that are company-wide non-working days (public holidays), not
+# personal leave.  They still reduce expected/target hours (nobody is expected
+# to work), but must NOT be tallied in the "Leave Days" columns or the
+# "On leave" alerts — counting them made April show 3 leaves when only 2 were
+# actual personal leave.
+HOLIDAY_LEAVE_TYPES = {"Public Holiday"}
+
 # ---------------------------------------------------------------------------
 # Range helpers
 # ---------------------------------------------------------------------------
@@ -379,6 +386,29 @@ def _csv_button(df: pd.DataFrame, filename: str, key: str):
 # Data loaders
 # ---------------------------------------------------------------------------
 
+# PostgREST (Supabase) caps every response at 1000 rows by default.  Range
+# queries that span more than ~2.5 months exceed that at current headcount, so a
+# bare .execute() silently drops rows and under-counts everything (this is what
+# made a Jan–Jun range show fewer leaves than April alone).  _fetch_all pages
+# through the full result set so summaries are computed on complete data.
+_PAGE_SIZE = 1000
+
+def _fetch_all(build_query) -> list[dict]:
+    """Return every row for a Supabase query, paging past the 1000-row API cap.
+
+    `build_query` is a zero-arg callable returning a fresh query (select +
+    filters + a stable .order()), WITHOUT range/limit applied.
+    """
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        batch = build_query().range(offset, offset + _PAGE_SIZE - 1).execute().data or []
+        rows.extend(batch)
+        if len(batch) < _PAGE_SIZE:
+            return rows
+        offset += _PAGE_SIZE
+
+
 @st.cache_data(ttl=60)
 def load_last_synced() -> str | None:
     """Most-recent engine run time (global max pulled_at across all snapshot dates).
@@ -463,15 +493,15 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     Targets are pro-rated by each employee's active range so joiners /
     departures within the week are handled correctly.
     """
-    rows = (
+    data = _fetch_all(lambda: (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
                 "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", week_start)
         .lte("snapshot_date", week_end)
-        .execute()
-    )
-    df = pd.DataFrame(rows.data)
+        .order("id")
+    ))
+    df = pd.DataFrame(data)
     if df.empty:
         return df
 
@@ -484,6 +514,10 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     df["_departed"]      = emp_cols["departed_date"].map(_parse_date)
     df["leave_type"]     = df["leave_type"].fillna("")
     df["hours_logged"]   = df["hours_logged"].astype(float)
+    # Excused = personal leave OR public holiday (both reduce the target).
+    # Leave  = personal leave only (holidays are not tallied as leave).
+    df["_excused"]       = df["leave_type"] != ""
+    df["_leave"]         = df["_excused"] & ~df["leave_type"].isin(HOLIDAY_LEAVE_TYPES)
 
     # Drop snapshot rows outside each employee's active range
     df = _filter_active_on(df)
@@ -497,7 +531,8 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
         df.groupby("Employee")
         .agg(
             Hours        = ("hours_logged", "sum"),
-            Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
+            Excused_Days = ("_excused", "sum"),
+            Leave_Days   = ("_leave",   "sum"),
             weekly_target= ("weekly_target", "first"),
             daily_target = ("daily_target",  "first"),
             _joined      = ("_joined",       "first"),
@@ -513,7 +548,7 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
         axis=1,
     )
     agg = agg[agg["active_days"] > 0]   # drop employees with no overlap
-    agg["Target"]  = ((agg["active_days"] - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
+    agg["Target"]  = ((agg["active_days"] - agg["Excused_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
     agg["Deficit"] = (agg["Target"] - agg["Hours"]).clip(lower=0).round(2)
 
     def _status(row):
@@ -533,15 +568,15 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     if monday > through:
         return pd.DataFrame()
 
-    rows = (
+    data = _fetch_all(lambda: (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
                 "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", monday)
         .lte("snapshot_date", through)
-        .execute()
-    )
-    df = pd.DataFrame(rows.data)
+        .order("id")
+    ))
+    df = pd.DataFrame(data)
     if df.empty:
         return df
 
@@ -553,6 +588,8 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     df["_joined"]       = emp_cols["joined_date"].map(_parse_date)
     df["_departed"]     = emp_cols["departed_date"].map(_parse_date)
     df["leave_type"]    = df["leave_type"].fillna("")
+    df["_excused"]      = df["leave_type"] != ""
+    df["_leave"]        = df["_excused"] & ~df["leave_type"].isin(HOLIDAY_LEAVE_TYPES)
 
     df = _filter_active_on(df)
     if df.empty:
@@ -571,7 +608,8 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
         df.groupby("Employee")
         .agg(
             Hours        = ("hours_logged", "sum"),
-            Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
+            Excused_Days = ("_excused", "sum"),
+            Leave_Days   = ("_leave",   "sum"),
             weekly_target= ("weekly_target", "first"),
             daily_target = ("daily_target",  "first"),
             _joined      = ("_joined",       "first"),
@@ -586,7 +624,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
         axis=1,
     )
     agg = agg[agg["active_days"] > 0]
-    agg["Target"]    = ((agg["active_days"] - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0)
+    agg["Target"]    = ((agg["active_days"] - agg["Excused_Days"]) * agg["daily_target"]).clip(lower=0)
     agg["Projected"] = (agg["Hours"] / days_elapsed * 5).round(2)
     agg["Days Left"] = max(5 - days_elapsed, 0)
 
@@ -605,15 +643,15 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
-    rows = (
+    data = _fetch_all(lambda: (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
                 "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", start)
         .lte("snapshot_date", end)
-        .execute()
-    )
-    df = pd.DataFrame(rows.data)
+        .order("id")
+    ))
+    df = pd.DataFrame(data)
     if df.empty:
         return df
 
@@ -625,6 +663,10 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     df["_departed"]    = emp_cols["departed_date"].map(_parse_date)
     df["leave_type"]   = df["leave_type"].fillna("")
     df["hours_logged"] = df["hours_logged"].astype(float)
+    # Excused = personal leave OR public holiday (both reduce expected hours).
+    # Leave  = personal leave only (holidays are not tallied as leave).
+    df["_excused"]     = df["leave_type"] != ""
+    df["_leave"]       = df["_excused"] & ~df["leave_type"].isin(HOLIDAY_LEAVE_TYPES)
 
     # Drop snapshot rows outside each employee's active range
     df = _filter_active_on(df)
@@ -652,7 +694,8 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
             Total_Hours  = ("hours_logged", "sum"),
             Days_Present = ("hours_logged", lambda x: (x > 0).sum()),
             Days_Absent  = ("hours_logged", lambda x: ((x == 0) & (df.loc[x.index, "leave_type"] == "")).sum()),
-            Leave_Days   = ("leave_type",   lambda x: (x != "").sum()),
+            Excused_Days = ("_excused", "sum"),
+            Leave_Days   = ("_leave",   "sum"),
             daily_target = ("daily_target", "first"),
             _joined      = ("_joined",       "first"),
             _departed    = ("_departed",     "first"),
@@ -663,7 +706,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
         lambda r: _working_days_in_range(r["_joined"], r["_departed"]), axis=1
     )
     agg = agg[agg["working_days"] > 0]
-    agg["Expected Hrs"] = ((agg["working_days"] - agg["Leave_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
+    agg["Expected Hrs"] = ((agg["working_days"] - agg["Excused_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
     agg["Deficit"]      = (agg["Expected Hrs"] - agg["Total_Hours"]).clip(lower=0).round(2)
     agg = agg.sort_values("Deficit", ascending=False)
     agg = agg.rename(columns={
@@ -675,16 +718,14 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_anomalies(start: str, end: str) -> pd.DataFrame:
-    rows = (
+    data = _fetch_all(lambda: (
         sb.table("anomalies")
         .select("anomaly_date, anomaly_type, detail, employees(jibble_name, joined_date, departed_date)")
         .gte("anomaly_date", start)
         .lte("anomaly_date", end)
-        .order("anomaly_date", desc=True)
-        .limit(1000)
-        .execute()
-    )
-    df = pd.DataFrame(rows.data)
+        .order("id")
+    ))
+    df = pd.DataFrame(data)
     if df.empty:
         return df
 
@@ -829,7 +870,8 @@ with tab1:
         else:
             absent   = df[(df["Total Hours"] == 0) & (df["Leave"] == "")]
             low_hrs  = df[(df["Total Hours"] > 0) & (df["Total Hours"] < 4) & (df["Leave"] == "")]
-            on_leave = df[df["Leave"] != ""]
+            holiday  = df[df["Leave"].isin(HOLIDAY_LEAVE_TYPES)]
+            on_leave = df[(df["Leave"] != "") & (~df["Leave"].isin(HOLIDAY_LEAVE_TYPES))]
 
             if not absent.empty:
                 names = ", ".join(absent["Employee"].tolist())
@@ -840,6 +882,9 @@ with tab1:
             if not on_leave.empty:
                 names = ", ".join(on_leave["Employee"].tolist())
                 st.markdown(f'<div class="alert alert-blue">🔵 <b>On leave ({len(on_leave)}):</b> {names}</div>', unsafe_allow_html=True)
+            if not holiday.empty:
+                hname = holiday["Leave"].mode().iloc[0]
+                st.markdown(f'<div class="alert alert-blue">🎉 <b>{hname}:</b> {len(holiday)} staff off (company holiday, not counted as leave)</div>', unsafe_allow_html=True)
             if absent.empty and low_hrs.empty:
                 st.markdown('<div class="alert alert-green">✅ No attendance issues.</div>', unsafe_allow_html=True)
 
