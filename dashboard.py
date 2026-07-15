@@ -130,7 +130,7 @@ sb = get_supabase()
 # Constants
 # ---------------------------------------------------------------------------
 
-PRESETS = ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Last Month", "Custom"]
+PRESETS = ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Last Month", "This Year", "Custom"]
 
 ANOMALY_SEVERITY = {
     "Unexcused Absence":    1,
@@ -188,6 +188,10 @@ def _compute_range(option: str, offset: int, today: date) -> tuple[date, date, s
         last_day = calendar.monthrange(year, month)[1]
         return start, min(date(year, month, last_day), today), "month"
 
+    if option == "This Year":
+        year = today.year + offset
+        return date(year, 1, 1), min(date(year, 12, 31), today), "month"
+
     return today, today, "day"
 
 
@@ -214,7 +218,7 @@ def range_picker(prefix: str) -> tuple[str, str, str]:
     Renders: segmented control → [◀  date badge  ▶] or custom date pickers.
     Returns (start_str, end_str, granularity) where granularity ∈ {day, week, month}.
     """
-    today = date.today()
+    today = _today()
 
     seg_key  = f"{prefix}_seg"
     off_key  = f"{prefix}_off"
@@ -285,10 +289,23 @@ def range_picker(prefix: str) -> tuple[str, str, str]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _today() -> date:
+    """Current date in IST. The server may run in UTC (Streamlit Cloud), where
+    date.today() is a day behind IST between midnight and 5:30 AM."""
+    return pd.Timestamp.now(tz="Asia/Kolkata").date()
+
+
+def _display_names(emp: pd.DataFrame) -> pd.Series:
+    """Short display name per employee, falling back to the full Jibble name."""
+    if "display_name" in emp.columns:
+        return emp["display_name"].fillna(emp["jibble_name"])
+    return emp["jibble_name"]
+
+
 def _flatten_employees(df: pd.DataFrame):
     emp = pd.json_normalize(df["employees"])
     df  = df.drop(columns=["employees"])
-    df["Employee"] = emp["jibble_name"]
+    df["Employee"] = _display_names(emp)
     df["Type"]     = emp["employment_type"].str.replace("_", " ").str.title()
     return df, emp
 
@@ -340,6 +357,19 @@ def _fmt_hrs(h) -> str:
         return "—"
     total_min = round(abs(h) * 60)
     return f"{total_min // 60}h {total_min % 60}m"
+
+
+def _fmt_hrs_signed(h) -> str:
+    """Signed variant of _fmt_hrs for net (±) values, e.g. '+3h 20m' / '−1h 05m'."""
+    try:
+        h = float(h)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(h):
+        return "—"
+    sign = "−" if h < 0 else "+"
+    total_min = round(abs(h) * 60)
+    return f"{sign}{total_min // 60}h {total_min % 60}m"
 
 
 def _parse_utc(val) -> "pd.Timestamp":
@@ -411,9 +441,9 @@ def _fetch_all(build_query) -> list[dict]:
 
 @st.cache_data(ttl=60)
 def load_last_synced() -> str | None:
-    """Most-recent engine run time (global max pulled_at across all snapshot dates).
-    Shown once in the page header so every view — Today, Yesterday, Week, etc. —
-    displays the same consistent sync timestamp.
+    """ISO timestamp of the most-recent engine run (global max pulled_at).
+    Formatting and staleness are computed by the header so they always use the
+    current clock rather than the cached value's age.
     """
     res = (
         sb.table("daily_snapshots")
@@ -425,7 +455,7 @@ def load_last_synced() -> str | None:
     if not res.data:
         return None
     ts = _parse_utc(res.data[0].get("pulled_at"))
-    return ts.tz_convert("Asia/Kolkata").strftime("%-I:%M %p") if pd.notna(ts) else None
+    return ts.isoformat() if pd.notna(ts) else None
 
 
 @st.cache_data(ttl=60)
@@ -434,7 +464,7 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
     rows = (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type, pulled_at, "
-                "employees(jibble_name, employment_type, joined_date, departed_date)")
+                "employees(jibble_name, display_name, employment_type, daily_target_hrs, joined_date, departed_date)")
         .eq("snapshot_date", snap_date)
         .execute()
     )
@@ -443,6 +473,7 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
         return df
 
     df, emp_raw = _flatten_employees(df)
+    df["_daily_target"] = emp_raw["daily_target_hrs"].astype(float)
     df["_joined"]   = emp_raw["joined_date"].map(_parse_date)
     df["_departed"] = emp_raw["departed_date"].map(_parse_date)
     df = _filter_active_on(df)
@@ -480,8 +511,9 @@ def load_daily_snapshot(snap_date: str) -> pd.DataFrame:
         "leave_type":     "Leave",
     })
     df = df.sort_values(["Total Hours", "Employee"]).drop(columns=["snapshot_date", "pulled_at"])
-    # Leave moved to col 3 so it's always visible
-    return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out"]].reset_index(drop=True)
+    # Leave moved to col 3 so it's always visible; _daily_target retained for
+    # per-employee alert thresholds and dropped before display.
+    return df[["Employee", "Type", "Leave", "Total Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out", "_daily_target"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)
@@ -496,7 +528,7 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     data = _fetch_all(lambda: (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
-                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
+                "employees(jibble_name, display_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", week_start)
         .lte("snapshot_date", week_end)
         .order("id")
@@ -507,7 +539,7 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
 
     emp_cols = pd.json_normalize(df["employees"])
     df = df.drop(columns=["employees"])
-    df["Employee"]       = emp_cols["jibble_name"]
+    df["Employee"]       = _display_names(emp_cols)
     df["weekly_target"]  = emp_cols["weekly_target_hrs"].astype(float)
     df["daily_target"]   = emp_cols["daily_target_hrs"].astype(float)
     df["_joined"]        = emp_cols["joined_date"].map(_parse_date)
@@ -571,7 +603,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     data = _fetch_all(lambda: (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
-                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
+                "employees(jibble_name, display_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", monday)
         .lte("snapshot_date", through)
         .order("id")
@@ -582,7 +614,7 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
 
     emp_cols = pd.json_normalize(df["employees"])
     df = df.drop(columns=["employees"])
-    df["Employee"]      = emp_cols["jibble_name"]
+    df["Employee"]      = _display_names(emp_cols)
     df["weekly_target"] = emp_cols["weekly_target_hrs"].astype(float)
     df["daily_target"]  = emp_cols["daily_target_hrs"].astype(float)
     df["_joined"]       = emp_cols["joined_date"].map(_parse_date)
@@ -595,21 +627,27 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    monday_date   = date.fromisoformat(monday)
-    friday_date   = monday_date + timedelta(days=4)
-    today         = date.today()
-    days_elapsed  = sum(
-        1 for i in range((today - monday_date).days + 1)
-        if (monday_date + timedelta(days=i)).weekday() < 5
-    )
-    days_elapsed = max(days_elapsed, 1)
+    monday_date = date.fromisoformat(monday)
+    friday_date = monday_date + timedelta(days=4)
+    today       = _today()
+
+    # Split hours into completed days vs today: today's numbers are partial
+    # (the engine syncs intra-day), so the projection must not treat today as a
+    # finished day — that used to show most of the team in false "Deficit"
+    # every morning.
+    df["hours_logged"] = df["hours_logged"].astype(float)
+    snap_dates         = pd.to_datetime(df["snapshot_date"]).dt.date
+    df["_hours_pre"]   = df["hours_logged"].where(snap_dates < today, 0.0)
+    df["_leave_today"] = df["_excused"] & (snap_dates == today)
 
     agg = (
         df.groupby("Employee")
         .agg(
             Hours        = ("hours_logged", "sum"),
+            Hours_Pre    = ("_hours_pre",   "sum"),
             Excused_Days = ("_excused", "sum"),
             Leave_Days   = ("_leave",   "sum"),
+            Leave_Today  = ("_leave_today", "max"),
             weekly_target= ("weekly_target", "first"),
             daily_target = ("daily_target",  "first"),
             _joined      = ("_joined",       "first"),
@@ -624,9 +662,25 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
         axis=1,
     )
     agg = agg[agg["active_days"] > 0]
-    agg["Target"]    = ((agg["active_days"] - agg["Excused_Days"]) * agg["daily_target"]).clip(lower=0)
-    agg["Projected"] = (agg["Hours"] / days_elapsed * 5).round(2)
-    agg["Days Left"] = max(5 - days_elapsed, 0)
+    agg["Target"] = ((agg["active_days"] - agg["Excused_Days"]) * agg["daily_target"]).clip(lower=0)
+
+    # Projected end-of-week = hours banked before today + (today and the
+    # remaining working days at target pace, skipping a known leave day today).
+    def _remaining_days(r):
+        days = 0
+        d = today
+        while d <= friday_date:
+            if d.weekday() < 5 \
+               and (r["_joined"] is None or d >= r["_joined"]) \
+               and (r["_departed"] is None or d <= r["_departed"]):
+                days += 1
+            d += timedelta(days=1)
+        if r["Leave_Today"] and days > 0:
+            days -= 1
+        return days
+
+    agg["Days Left"] = agg.apply(_remaining_days, axis=1)
+    agg["Projected"] = (agg["Hours_Pre"] + agg["Days Left"] * agg["daily_target"]).round(2)
 
     def _status(row):
         if row["Projected"] >= row["Target"]:     return "On Track"
@@ -646,7 +700,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     data = _fetch_all(lambda: (
         sb.table("daily_snapshots")
         .select("snapshot_date, hours_logged, leave_type, "
-                "employees(jibble_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
+                "employees(jibble_name, display_name, employment_type, weekly_target_hrs, daily_target_hrs, joined_date, departed_date)")
         .gte("snapshot_date", start)
         .lte("snapshot_date", end)
         .order("id")
@@ -657,7 +711,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
 
     emp_cols = pd.json_normalize(df["employees"])
     df = df.drop(columns=["employees"])
-    df["Employee"]     = emp_cols["jibble_name"]
+    df["Employee"]     = _display_names(emp_cols)
     df["daily_target"] = emp_cols["daily_target_hrs"].astype(float)
     df["_joined"]      = emp_cols["joined_date"].map(_parse_date)
     df["_departed"]    = emp_cols["departed_date"].map(_parse_date)
@@ -707,20 +761,22 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     )
     agg = agg[agg["working_days"] > 0]
     agg["Expected Hrs"] = ((agg["working_days"] - agg["Excused_Days"]) * agg["daily_target"]).clip(lower=0).round(2)
-    agg["Deficit"]      = (agg["Expected Hrs"] - agg["Total_Hours"]).clip(lower=0).round(2)
-    agg = agg.sort_values("Deficit", ascending=False)
+    # Net (±) instead of deficit-only: surplus hours are informative too, and a
+    # one-sided "Deficit" column hides people consistently over target.
+    agg["Net Hrs"] = (agg["Total_Hours"] - agg["Expected Hrs"]).round(2)
+    agg = agg.sort_values("Net Hrs")
     agg = agg.rename(columns={
         "Total_Hours": "Hours", "Days_Present": "Days Present",
         "Days_Absent": "Days Absent", "Leave_Days": "Leave Days",
     })
-    return agg[["Employee", "Deficit", "Hours", "Expected Hrs", "Days Present", "Days Absent", "Leave Days"]].reset_index(drop=True)
+    return agg[["Employee", "Net Hrs", "Hours", "Expected Hrs", "Days Present", "Days Absent", "Leave Days"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)
 def load_anomalies(start: str, end: str) -> pd.DataFrame:
     data = _fetch_all(lambda: (
         sb.table("anomalies")
-        .select("anomaly_date, anomaly_type, detail, employees(jibble_name, joined_date, departed_date)")
+        .select("anomaly_date, anomaly_type, detail, employees(jibble_name, display_name, joined_date, departed_date)")
         .gte("anomaly_date", start)
         .lte("anomaly_date", end)
         .order("id")
@@ -731,7 +787,7 @@ def load_anomalies(start: str, end: str) -> pd.DataFrame:
 
     emp = pd.json_normalize(df["employees"])
     df  = df.drop(columns=["employees"])
-    df["Employee"]  = emp["jibble_name"]
+    df["Employee"]  = _display_names(emp)
     df["_joined"]   = emp["joined_date"].map(_parse_date)
     df["_departed"] = emp["departed_date"].map(_parse_date)
     df = df.rename(columns={"anomaly_date": "Date", "anomaly_type": "Type", "detail": "Detail"})
@@ -766,6 +822,80 @@ def load_anomaly_summary(start: str, end: str) -> pd.DataFrame:
     return pd.DataFrame(records).sort_values("Total", ascending=False).reset_index(drop=True)
 
 
+@st.cache_data(ttl=300)
+def load_employees() -> pd.DataFrame:
+    """Full roster with targets and active ranges (for drill-down and
+    'expected but missing' checks)."""
+    res = sb.table("employees").select(
+        "member_id, jibble_name, display_name, employment_type, "
+        "weekly_target_hrs, daily_target_hrs, is_active, is_excluded, "
+        "joined_date, departed_date"
+    ).execute()
+    df = pd.DataFrame(res.data)
+    if df.empty:
+        return df
+    df["display_name"] = df["display_name"].fillna(df["jibble_name"])
+    df["_joined"]      = df["joined_date"].map(_parse_date)
+    df["_departed"]    = df["departed_date"].map(_parse_date)
+    return df
+
+
+@st.cache_data(ttl=60)
+def load_member_daily(member_id: str, start: str, end: str) -> pd.DataFrame:
+    """Per-day rows for one employee, formatted like the day view."""
+    data = _fetch_all(lambda: (
+        sb.table("daily_snapshots")
+        .select("snapshot_date, hours_logged, session_count, first_clock_in, last_clock_out, leave_type")
+        .eq("member_id", member_id)
+        .gte("snapshot_date", start)
+        .lte("snapshot_date", end)
+        .order("snapshot_date", desc=True)
+    ))
+    df = pd.DataFrame(data)
+    if df.empty:
+        return df
+    df["hours_logged"] = df["hours_logged"].astype(float)
+    df["leave_type"]   = df["leave_type"].fillna("")
+    first_ts = df["first_clock_in"].map(_parse_utc)
+    last_ts  = df["last_clock_out"].map(_parse_utc)
+    span = pd.Series(
+        [(lo - fi).total_seconds() / 3600 if pd.notna(fi) and pd.notna(lo) else float("nan")
+         for fi, lo in zip(first_ts, last_ts)],
+        index=df.index,
+    )
+    df["Break Hrs"] = (span - df["hours_logged"]).clip(lower=0).round(2)
+    df["Clock In"]  = first_ts.map(_to_ist_str)
+    df["Clock Out"] = last_ts.map(_to_ist_str)
+    df = df.rename(columns={
+        "snapshot_date": "Date", "hours_logged": "Hours",
+        "session_count": "Sessions", "leave_type": "Leave",
+    })
+    return df[["Date", "Hours", "Break Hrs", "Sessions", "Clock In", "Clock Out", "Leave"]].reset_index(drop=True)
+
+
+@st.cache_data(ttl=60)
+def load_leave_rows(start: str, end: str) -> pd.DataFrame:
+    """All leave/holiday snapshot rows in range (for the Leaves summary)."""
+    data = _fetch_all(lambda: (
+        sb.table("daily_snapshots")
+        .select("snapshot_date, leave_type, employees(jibble_name, display_name, joined_date, departed_date)")
+        .gte("snapshot_date", start)
+        .lte("snapshot_date", end)
+        .not_.is_("leave_type", "null")
+        .order("id")
+    ))
+    df = pd.DataFrame(data)
+    if df.empty:
+        return df
+    emp = pd.json_normalize(df["employees"])
+    df  = df.drop(columns=["employees"])
+    df["Employee"]  = _display_names(emp)
+    df["_joined"]   = emp["joined_date"].map(_parse_date)
+    df["_departed"] = emp["departed_date"].map(_parse_date)
+    df = _filter_active_on(df)
+    return df[["snapshot_date", "leave_type", "Employee"]].reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # Stylers
 # ---------------------------------------------------------------------------
@@ -792,6 +922,15 @@ def _color_hours(val):
     if h < 4:   return "color:#fbbf24; font-weight:600"
     if h >= 10: return "color:#60a5fa; font-weight:600"
     return ""  # normal range — use theme default so it's readable on both light and dark
+
+def _color_net(val):
+    try:
+        h = float(val)
+    except (TypeError, ValueError):
+        return ""
+    if h >= 0:  return "color:#4ade80; font-weight:600"
+    if h >= -4: return "color:#fbbf24; font-weight:600"
+    return "color:#f87171; font-weight:700"
 
 def _color_deficit(val):
     try:
@@ -827,13 +966,28 @@ def _heat_count(val):
 
 _hdr_col, _sync_col, _ref_col = st.columns([5, 2, 1])
 _hdr_col.markdown("## 📋 Attendance Dashboard")
-_last_synced_global = load_last_synced()
-if _last_synced_global:
-    _sync_col.markdown(
-        f'<div style="text-align:right;padding-top:14px;font-size:0.78rem;opacity:0.65;">'
-        f'⏱ Engine last synced: <b>{_last_synced_global} IST</b></div>',
-        unsafe_allow_html=True,
-    )
+
+_sync_ts  = _parse_utc(load_last_synced())
+_sync_ist = _sync_ts.tz_convert("Asia/Kolkata") if pd.notna(_sync_ts) else None
+if _sync_ist is not None:
+    _sync_label = _sync_ist.strftime("%I:%M %p").lstrip("0") + _sync_ist.strftime(", %a %d %b")
+    # Stale = last sync is older than the previous working day (weekends OK:
+    # Monday morning showing Friday-night data is normal, Tuesday isn't).
+    _prev_wd = _today() - timedelta(days=1)
+    while _prev_wd.weekday() >= 5:
+        _prev_wd -= timedelta(days=1)
+    if _sync_ist.date() < _prev_wd:
+        _sync_col.markdown(
+            f'<div style="text-align:right;padding-top:14px;font-size:0.78rem;color:#fbbf24;">'
+            f'⚠️ Last synced <b>{_sync_label} IST</b> — data may be behind</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _sync_col.markdown(
+            f'<div style="text-align:right;padding-top:14px;font-size:0.78rem;opacity:0.65;">'
+            f'⏱ Engine last synced: <b>{_sync_label} IST</b></div>',
+            unsafe_allow_html=True,
+        )
 if _ref_col.button("🔄", key="global_refresh", help="Refresh all data"):
     load_daily_snapshot.clear()
     load_last_synced.clear()
@@ -842,6 +996,9 @@ if _ref_col.button("🔄", key="global_refresh", help="Refresh all data"):
     load_monthly_summary.clear()
     load_anomalies.clear()
     load_anomaly_summary.clear()
+    load_employees.clear()
+    load_member_daily.clear()
+    load_leave_rows.clear()
     st.rerun()
 st.markdown("---")
 
@@ -849,13 +1006,15 @@ st.markdown("---")
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab1, tab2, tab3 = st.tabs(["Attendance", "Anomalies", "Anomaly Breakdown"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Attendance", "Anomalies", "Anomaly Breakdown", "Employee", "Leaves"]
+)
 
 
 # ── Tab 1: Attendance ─────────────────────────────────────────────────────────
 
 with tab1:
-    today = date.today()
+    today = _today()
     start_str, end_str, gran = range_picker("att")
     start = date.fromisoformat(start_str)
     end   = date.fromisoformat(end_str)
@@ -866,10 +1025,26 @@ with tab1:
     if gran == "day":
         df = load_daily_snapshot(start_str)
         if df.empty:
-            st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run yet.")
+            if start == today:
+                st.info(
+                    f"No snapshot data yet for {start.strftime('%A, %d %b %Y')}. "
+                    "The engine's first sync of a new day runs at ~1 PM IST "
+                    "(the morning run re-syncs yesterday and earlier)."
+                )
+            else:
+                st.info(f"No snapshot data for {start.strftime('%A, %d %b %Y')}. The engine may not have run for this date.")
         else:
+            if start == today and _sync_ist is not None and _sync_ist.date() == today:
+                st.caption(
+                    f"⏱ In-progress day — totals are partial (as of {_sync_label} IST) "
+                    "and update every engine sync."
+                )
+
             absent   = df[(df["Total Hours"] == 0) & (df["Leave"] == "")]
-            low_hrs  = df[(df["Total Hours"] > 0) & (df["Total Hours"] < 4) & (df["Leave"] == "")]
+            # Threshold is per-employee (half their daily target) so part-timers
+            # aren't flagged against a full-timer's bar.
+            low_hrs  = df[(df["Total Hours"] > 0) & (df["Leave"] == "")
+                          & (df["Total Hours"] < df["_daily_target"] * 0.5)]
             holiday  = df[df["Leave"].isin(HOLIDAY_LEAVE_TYPES)]
             on_leave = df[(df["Leave"] != "") & (~df["Leave"].isin(HOLIDAY_LEAVE_TYPES))]
 
@@ -878,13 +1053,29 @@ with tab1:
                 st.markdown(f'<div class="alert alert-red">🔴 <b>Absent, no leave ({len(absent)}):</b> {names}</div>', unsafe_allow_html=True)
             if not low_hrs.empty:
                 names = ", ".join(low_hrs["Employee"].tolist())
-                st.markdown(f'<div class="alert alert-yellow">⚠️ <b>Under 4h logged ({len(low_hrs)}):</b> {names}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="alert alert-yellow">⚠️ <b>Below half-day hours ({len(low_hrs)}):</b> {names}</div>', unsafe_allow_html=True)
             if not on_leave.empty:
                 names = ", ".join(on_leave["Employee"].tolist())
                 st.markdown(f'<div class="alert alert-blue">🔵 <b>On leave ({len(on_leave)}):</b> {names}</div>', unsafe_allow_html=True)
             if not holiday.empty:
                 hname = holiday["Leave"].mode().iloc[0]
                 st.markdown(f'<div class="alert alert-blue">🎉 <b>{hname}:</b> {len(holiday)} staff off (company holiday, not counted as leave)</div>', unsafe_allow_html=True)
+
+            # Active employees with no snapshot row at all — a silent sync gap
+            # is easy to miss when someone simply doesn't appear in the table.
+            roster = load_employees()
+            if not roster.empty:
+                active_today = {
+                    r["display_name"]
+                    for _, r in roster.iterrows()
+                    if not r["is_excluded"] and r.get("is_active", True)
+                    and (r["_joined"] is None or start >= r["_joined"])
+                    and (r["_departed"] is None or start <= r["_departed"])
+                }
+                missing = sorted(active_today - set(df["Employee"]))
+                if missing:
+                    st.markdown(f'<div class="alert alert-blue">❔ <b>No data ({len(missing)}):</b> {", ".join(missing)}</div>', unsafe_allow_html=True)
+
             if absent.empty and low_hrs.empty:
                 st.markdown('<div class="alert alert-green">✅ No attendance issues.</div>', unsafe_allow_html=True)
 
@@ -897,14 +1088,15 @@ with tab1:
             c5.metric("Avg Breaks", _fmt_hrs(df["Break Hrs"].mean()))
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
+            display_df = df.drop(columns=["_daily_target"])
             styled = (
-                df.style
+                display_df.style
                 .map(_color_hours, subset=["Total Hours"])
                 .map(_color_deficit, subset=["Break Hrs"])
                 .format({"Total Hours": _fmt_hrs, "Break Hrs": _fmt_hrs})
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
-            _csv_button(df, f"attendance_{start_str}.csv", key="att_day_csv")
+            _csv_button(display_df, f"attendance_{start_str}.csv", key="att_day_csv")
 
     # ── Week view ─────────────────────────────────────────────────────────────
     elif gran == "week":
@@ -917,13 +1109,11 @@ with tab1:
             if df.empty:
                 st.info("No data yet for this week.")
             else:
-                days_elapsed = sum(
-                    1 for i in range((today - start).days + 1)
-                    if (start + timedelta(days=i)).weekday() < 5
-                )
-                st.markdown(
-                    f"**Week of {start.strftime('%d %b %Y')}** · "
-                    f"{days_elapsed} working day(s) elapsed · Live projection"
+                st.markdown(f"**Week of {start.strftime('%d %b %Y')}** · Live")
+                st.caption(
+                    "Projected = hours completed before today + remaining working days "
+                    "(incl. today) at target pace. Today's partial hours count toward "
+                    "Hours but are not extrapolated."
                 )
 
                 deficit_emp = df[df["Status"] == "Deficit"]
@@ -1001,22 +1191,34 @@ with tab1:
             )
             st.markdown(f"**{label}**{partial_note}")
 
-            high_def = df[df["Deficit"] > 8]
+            # Enrich with anomaly counts so the month view doubles as a
+            # per-employee reliability roll-up.
+            summ = load_anomaly_summary(start_str, end_str)
+            if not summ.empty:
+                s_idx = summ.set_index("Employee")
+                df["Lates"]     = df["Employee"].map(s_idx["Late / No Start"].to_dict()).fillna(0).astype(int)
+                df["Anomalies"] = df["Employee"].map(s_idx["Total"].to_dict()).fillna(0).astype(int)
+            else:
+                df["Lates"]     = 0
+                df["Anomalies"] = 0
+
+            high_def = df[df["Net Hrs"] < -8]
             if not high_def.empty:
                 names = ", ".join(high_def["Employee"].tolist())
-                st.markdown(f'<div class="alert alert-red">🔴 <b>High deficit &gt;8h ({len(high_def)}):</b> {names}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="alert alert-red">🔴 <b>More than 8h behind ({len(high_def)}):</b> {names}</div>', unsafe_allow_html=True)
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Total Hours",      _fmt_hrs(df["Hours"].sum()))
-            c2.metric("Avg per Employee", _fmt_hrs(df["Hours"].mean()))
-            c3.metric("Total Deficit",    _fmt_hrs(df["Deficit"].sum()))
+            c1.metric("Total Hours",          _fmt_hrs(df["Hours"].sum()))
+            c2.metric("Avg per Employee",     _fmt_hrs(df["Hours"].mean()))
+            c3.metric("Team Net vs Expected", _fmt_hrs_signed(df["Net Hrs"].sum()))
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
             styled = (
                 df.style
-                .map(_color_deficit, subset=["Deficit"])
-                .map(_color_absent,  subset=["Days Absent"])
-                .format({"Hours": _fmt_hrs, "Expected Hrs": _fmt_hrs, "Deficit": _fmt_hrs})
+                .map(_color_net,    subset=["Net Hrs"])
+                .map(_color_absent, subset=["Days Absent"])
+                .map(_heat_count,   subset=["Lates", "Anomalies"])
+                .format({"Hours": _fmt_hrs, "Expected Hrs": _fmt_hrs, "Net Hrs": _fmt_hrs_signed})
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
             _csv_button(df, f"range_{start_str}_to_{end_str}.csv", key="att_month_csv")
@@ -1084,3 +1286,149 @@ with tab3:
         num_cols = [c for c in df.columns if c != "Employee"]
         styled = df.style.map(_heat_count, subset=num_cols)
         st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# ── Tab 4: Employee drill-down ────────────────────────────────────────────────
+
+with tab4:
+    roster_all = load_employees()
+    if roster_all.empty:
+        st.info("No employees synced yet.")
+    else:
+        roster = roster_all[~roster_all["is_excluded"]].copy()
+        _t = _today()
+        roster["_label"] = [
+            r["display_name"] + (" (departed)" if r["_departed"] is not None and r["_departed"] < _t else "")
+            for _, r in roster.iterrows()
+        ]
+        roster = roster.sort_values("_label")
+
+        sel_col, _ = st.columns([2, 5])
+        sel_label = sel_col.selectbox("Employee", roster["_label"].tolist(), key="emp_sel")
+        emp_row   = roster[roster["_label"] == sel_label].iloc[0]
+
+        start_str, end_str, _gran = range_picker("emp")
+        st.markdown("---")
+
+        ddf = load_member_daily(emp_row["member_id"], start_str, end_str)
+        if ddf.empty:
+            st.info("No attendance data for this employee in the selected range.")
+        else:
+            # Metrics use completed days only — today's numbers are partial and
+            # would overstate Expected / understate Net while the day is live.
+            _t2   = _today()
+            dates = pd.to_datetime(ddf["Date"]).dt.date
+            comp  = ddf[dates < _t2]
+            live_partial = bool((dates == _t2).any())
+            base  = comp if not comp.empty else ddf
+
+            excused  = int((base["Leave"] != "").sum())
+            personal = int(((base["Leave"] != "") & (~base["Leave"].isin(HOLIDAY_LEAVE_TYPES))).sum())
+
+            s_d, e_d = date.fromisoformat(start_str), date.fromisoformat(end_str)
+            lo = max(s_d, emp_row["_joined"])   if emp_row["_joined"]   else s_d
+            hi = min(e_d, emp_row["_departed"]) if emp_row["_departed"] else e_d
+            if not comp.empty:
+                hi = min(hi, _t2 - timedelta(days=1))
+            wdays = (
+                sum(1 for i in range((hi - lo).days + 1) if (lo + timedelta(days=i)).weekday() < 5)
+                if hi >= lo else 0
+            )
+            expected = max(0.0, (wdays - excused) * float(emp_row["daily_target_hrs"]))
+            hours    = float(base["Hours"].sum())
+
+            if live_partial and not comp.empty:
+                st.caption("⏱ Today is in progress — the metrics below cover completed days only; today's partial hours appear in the daily log.")
+
+            ano_all = load_anomalies(start_str, end_str)
+            my_ano  = ano_all[ano_all["Employee"] == emp_row["display_name"]] if not ano_all.empty else ano_all
+            lates   = int((my_ano["Type"] == "Late / No Start").sum()) if not my_ano.empty else 0
+
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("Hours",     _fmt_hrs(hours))
+            c2.metric("Expected",  _fmt_hrs(expected))
+            c3.metric("Net",       _fmt_hrs_signed(hours - expected))
+            c4.metric("Leaves",    personal)
+            c5.metric("Lates",     lates)
+            c6.metric("Anomalies", 0 if my_ano.empty else len(my_ano))
+
+            # Weekly trend — only meaningful when the range spans 2+ weeks
+            wk_dates = pd.to_datetime(ddf["Date"]).dt.date
+            weekly = (
+                pd.DataFrame({
+                    "Week": [(d - timedelta(days=d.weekday())).isoformat() for d in wk_dates],
+                    "Hours": ddf["Hours"].values,
+                })
+                .groupby("Week")["Hours"].sum().reset_index().sort_values("Week")
+            )
+            if len(weekly) > 1:
+                st.markdown("**Weekly hours**")
+                st.bar_chart(weekly.set_index("Week")["Hours"], color="#3b82f6", height=220)
+                st.caption(
+                    f"Weekly target ≈ {_fmt_hrs(float(emp_row['daily_target_hrs']) * 5)} "
+                    "before leave adjustments. The newest week may be partial."
+                )
+
+            st.markdown("**Daily log**")
+            styled = (
+                ddf.style
+                .map(_color_hours,   subset=["Hours"])
+                .map(_color_deficit, subset=["Break Hrs"])
+                .format({"Hours": _fmt_hrs, "Break Hrs": _fmt_hrs})
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+            _csv_button(ddf, f"{emp_row['display_name']}_{start_str}_to_{end_str}.csv", key="emp_csv")
+
+            if not my_ano.empty:
+                st.markdown("**Anomalies in range**")
+                st.dataframe(
+                    my_ano[["Date", "Type", "Detail"]].style.map(_color_anomaly, subset=["Type"]),
+                    use_container_width=True, hide_index=True,
+                )
+
+
+# ── Tab 5: Leaves ─────────────────────────────────────────────────────────────
+
+with tab5:
+    start_str, end_str, _gran = range_picker("lv")
+    st.markdown("---")
+
+    lv = load_leave_rows(start_str, end_str)
+    if lv.empty:
+        st.info("No leave records in the selected date range.")
+    else:
+        personal_lv = lv[~lv["leave_type"].isin(HOLIDAY_LEAVE_TYPES)]
+        holidays_n  = int(lv["leave_type"].isin(HOLIDAY_LEAVE_TYPES).sum())
+
+        pivot = (
+            pd.crosstab(personal_lv["Employee"], personal_lv["leave_type"])
+            if not personal_lv.empty else pd.DataFrame()
+        )
+
+        # Include employees active in the range who took no leave — zeros are
+        # part of the picture.
+        roster_all = load_employees()
+        if not roster_all.empty:
+            s_d, e_d = date.fromisoformat(start_str), date.fromisoformat(end_str)
+            in_range = {
+                r["display_name"]
+                for _, r in roster_all.iterrows()
+                if not r["is_excluded"]
+                and (r["_joined"] is None or r["_joined"] <= e_d)
+                and (r["_departed"] is None or r["_departed"] >= s_d)
+            }
+            pivot = pivot.reindex(sorted(in_range | set(pivot.index)))
+        pivot = pivot.fillna(0).astype(int)
+        pivot["Total"] = pivot.sum(axis=1)
+        out = pivot.sort_values("Total", ascending=False).reset_index()
+        out = out.rename(columns={out.columns[0]: "Employee"})
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Personal leave days",       int(out["Total"].sum()))
+        c2.metric("Employees with leave",      int((out["Total"] > 0).sum()))
+        c3.metric("Public-holiday person-days", holidays_n)
+
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        st.dataframe(out, use_container_width=True, hide_index=True)
+        st.caption("Counts are personal leave only — public holidays are excluded (shown in the metric above).")
+        _csv_button(out, f"leaves_{start_str}_to_{end_str}.csv", key="lv_csv")

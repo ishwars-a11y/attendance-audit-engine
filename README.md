@@ -74,7 +74,11 @@ python main.py --backfill --from 2024-05-01 --to 2024-05-31
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`
 
-The workflow runs automatically at 11 PM IST Mon–Fri. You can also trigger it manually from the Actions tab.
+The workflow runs Mon–Fri at 10 AM, 1 PM, 5 PM, 9 PM and 11 PM IST. You can also trigger it manually from the Actions tab.
+
+- **10 AM** — deep re-sync of *yesterday + the previous 30 working days*. Deliberately does not touch today (nobody has clocked in yet — processing it would flag everyone absent). This is also what heals **retroactive leave**: employees who apply on Jibble after returning are picked up here, and any Unexcused-Absence / Weekly-Deficit anomalies for those days auto-resolve.
+- **1 PM / 5 PM / 9 PM** — fast intra-day sync of today only.
+- **11 PM** — closes out today and re-heals the last 5 working days, so same-week retroactive leave applications are reflected the same night.
 
 ### Step 9 — Set up Retool dashboard
 

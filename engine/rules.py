@@ -21,6 +21,7 @@ from config import (
     EXCESSIVE_HOURS_THRESHOLD,
     EXCESSIVE_SESSIONS_THRESHOLD,
     AT_RISK_BUFFER_HRS,
+    WEEKLY_DEFICIT_MIN_SHORTFALL_HRS,
     CHRONIC_LATE_THRESHOLD,
 )
 
@@ -158,8 +159,10 @@ def check_weekly_deficit(
     total_hours: float,
     effective_target: float,
 ) -> tuple[bool, str]:
-    if total_hours < effective_target:
-        deficit = effective_target - total_hours
+    """Flag only meaningful shortfalls — a critical anomaly for a few minutes
+    short creates alert fatigue and contradicts the dashboard's At-Risk buffer."""
+    deficit = effective_target - total_hours
+    if deficit > WEEKLY_DEFICIT_MIN_SHORTFALL_HRS:
         return True, f"{total_hours:.1f} hrs logged, {deficit:.1f} hrs short"
     return False, ""
 

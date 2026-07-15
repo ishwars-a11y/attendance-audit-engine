@@ -48,12 +48,21 @@ jobs:
             python main.py --date "${{ github.event.inputs.date }}" --lookback "${LOOKBACK:-0}"
 
           elif [ "${{ github.event.schedule }}" = "30 4 * * 1-5" ]; then
-            # First cron of the day (10:00 AM IST): deep re-sync to catch any
-            # retroactive leave approved overnight or in previous weeks.
-            python main.py --lookback 30
+            # First cron of the day (10:00 AM IST): deep re-sync through YESTERDAY
+            # to catch retroactive leave applied after the fact (employees often
+            # apply on Jibble once they're back). Deliberately does NOT process
+            # today — at 10 AM almost nobody has clocked in yet, which used to
+            # generate a wave of false Unexcused-Absence flags every morning.
+            python main.py --yesterday --lookback 30
+
+          elif [ "${{ github.event.schedule }}" = "30 17 * * 1-5" ]; then
+            # Final cron (11:00 PM IST): close out today AND re-heal the last 5
+            # working days so same-week retroactive leave applications are
+            # reflected the same night instead of waiting for the deep re-sync.
+            python main.py --lookback 5
 
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            # Intraday crons (1 PM / 5 PM / 9 PM / 11 PM): sync today only — fast.
+            # Intraday crons (1 PM / 5 PM / 9 PM): sync today only — fast.
             python main.py
 
           else

@@ -78,3 +78,14 @@ create table if not exists admin_edits (
 create index if not exists idx_snapshots_date     on daily_snapshots(snapshot_date);
 create index if not exists idx_anomalies_date     on anomalies(anomaly_date);
 create index if not exists idx_summaries_week     on weekly_summaries(week_start);
+
+-- Migration (recommended, run once in the Supabase SQL editor): the engine's
+-- check-then-insert for anomalies is not atomic, so two concurrent runs (e.g.
+-- a push-triggered run racing a manual dispatch) can double-insert the same
+-- anomaly. Dedupe, then add a unique index to make it impossible:
+--
+--   delete from anomalies a using anomalies b
+--     where a.id > b.id and a.member_id = b.member_id
+--       and a.anomaly_date = b.anomaly_date and a.anomaly_type = b.anomaly_type;
+--   create unique index if not exists uq_anomalies_member_date_type
+--     on anomalies(member_id, anomaly_date, anomaly_type);

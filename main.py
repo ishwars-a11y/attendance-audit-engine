@@ -298,6 +298,10 @@ def main():
                         help="Sync employee list from Jibble to Supabase")
     parser.add_argument("--date", type=str, default=None,
                         help="Run for a specific date (YYYY-MM-DD). Defaults to today.")
+    parser.add_argument("--yesterday", action="store_true",
+                        help="Run for yesterday instead of today. Used by the morning "
+                             "cron so the just-started workday isn't processed while "
+                             "everyone is still at ~0 hours (false Unexcused Absences).")
     parser.add_argument("--lookback", type=int, default=0, metavar="N",
                         help="Also re-sync the N most recent working days before the "
                              "target date. Picks up retroactive leave approvals that "
@@ -340,7 +344,12 @@ def main():
             current += timedelta(days=1)
         return
 
-    target = date.fromisoformat(args.date) if args.date else date.today()
+    if args.date:
+        target = date.fromisoformat(args.date)
+    elif args.yesterday:
+        target = date.today() - timedelta(days=1)
+    else:
+        target = date.today()
 
     if args.lookback > 0:
         # Collect the N most-recent working days before target (oldest first)

@@ -31,6 +31,7 @@ EXCESSIVE_SESSIONS_THRESHOLD = 4    # deprecated
 MAX_BREAK_HOURS           = 2.0  # total break time (span − worked) before flagging
 EXCESSIVE_HOURS_THRESHOLD = 10   # hours/day before flagging
 AT_RISK_BUFFER_HRS        = 4    # hours below effective target → "At Risk" (not "Deficit")
+WEEKLY_DEFICIT_MIN_SHORTFALL_HRS = 1.0  # ignore sub-1h weekly shortfalls (rounding / minor gaps)
 CHRONIC_LATE_THRESHOLD    = 3    # Late/No Start flags in one week → Chronic Late Starter
 
 # Employee roster — keyed by Jibble name (exact string from /v1/people response).

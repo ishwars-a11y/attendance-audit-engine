@@ -1,0 +1,9 @@
+# Pin the dark theme — the dashboard's custom CSS (metric cards, alert banners)
+# is designed for dark backgrounds and is unreadable on Streamlit's light theme.
+[theme]
+base = "dark"
+primaryColor = "#60a5fa"
+
+# Hide developer toolbar items (Deploy button, dev menu) from viewers.
+[client]
+toolbarMode = "minimal"
