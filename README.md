@@ -51,6 +51,8 @@ python main.py --sync-employees
 
 This pulls all members from Jibble and writes them to Supabase. Check the output — any "Unknown member" warnings mean someone's Jibble name doesn't match `config.py`. Update `config.py` to match the exact Jibble name.
 
+**When adding a new employee, always set `joined_date` (their first working day).** Without it, every date before they joined counts as an unexcused zero-hour absence in backfilled/historical ranges and inflates their expected hours.
+
 ### Step 6 — Test a single day
 
 ```bash
@@ -111,7 +113,7 @@ To enable this, run the engine twice daily (e.g. add a second cron at 1 PM IST) 
 | Unexcused Absence | All | Zero hours, no leave, no holiday |
 | Excessive Hours | Full-timers | > 10 hours/day |
 | Excessive Breaks | Full-timers | > 4 sessions (clock-in/clock-out pairs) |
-| Late / No Start | Full-timers | No clock-in before 11 AM IST, no AM leave |
+| Late / No Start | Full-timers | No clock-in before the shift cutoff, no AM leave. Date-aware: 11:10 AM IST up to 24 May 2026 (old 11 AM–8 PM shift), 10:10 AM IST from 25 May 2026 (10 AM–7 PM shift) — see `SHIFT_CHANGE_DATE` in `config.py` |
 | Weekly Deficit | All | Total hours < effective weekly target |
 
 ---

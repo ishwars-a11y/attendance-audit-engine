@@ -64,6 +64,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-04-02",   # First working day (derived from first Jibble entry)
     },
     "Abhishek Bhardwaj": {
         "display_name": "Abhishek B",
@@ -73,6 +74,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-04-13",   # First working day (derived from first Jibble entry)
     },
     "Abhishek Kalivela": {
         "display_name": "Abhishek (Frontend)",
@@ -82,6 +84,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-02-16",     # First working day (derived from first Jibble entry)
         "departed_date": "2026-05-19",   # Last working day
     },
     "Arfath Tade": {
@@ -110,6 +113,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-04-06",   # First working day (derived from first Jibble entry)
     },
     "Kannan Ravindran": {
         "display_name": "Kannan",
@@ -119,6 +123,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-03-05",   # First working day (derived from first Jibble entry)
         "departed_date": "2026-06-10", # Last working day
     },
     "Prathmesh Gaidhane": {
@@ -158,6 +163,7 @@ EMPLOYEES = {
         "daily_target_hrs": 8,
         "timezone": "Asia/Kolkata",
         "is_excluded": False,
+        "joined_date": "2026-01-27",   # First working day (derived from first Jibble entry)
     },
     "Shuvam Jaswal": {
         "display_name": "Shuvam",
