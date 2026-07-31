@@ -64,11 +64,13 @@ def run_for_date(target_date: date):
     from engine.jibble import JibbleClient
     from engine import rules, db
 
-    if target_date.weekday() >= 5:
-        logger.info(f"Skipping {target_date} (weekend)")
-        return
+    # Weekends are processed too: people sometimes work Sat/Sun to make up
+    # weekday hours, and those hours must count. Nothing is *expected* on a
+    # weekend though, so only worked days are recorded and schedule-based
+    # rules (absence / late / breaks) are skipped below.
+    is_weekend = target_date.weekday() >= 5
 
-    logger.info(f"Running engine for {target_date}")
+    logger.info(f"Running engine for {target_date}{' (weekend)' if is_weekend else ''}")
     client = JibbleClient()
 
     # get_timesheets returns one normalized dict per person with embedded leave/holiday:
@@ -99,6 +101,15 @@ def run_for_date(target_date: date):
         is_holiday           = ts.get("is_holiday", False)
         is_am_half_day       = ts.get("is_am_half_day", False)
         is_partial_leave     = ts.get("is_partial_leave", False)
+
+        # On a weekend, only store days with real activity — writing a
+        # zero-hour row for every employee on every Sat/Sun would double the
+        # table with rows that mean nothing. A clock-in with no hours still
+        # counts as activity: an open/forgotten session reports ~0 worked
+        # hours, and dropping it would hide the Missing Clock-Out that keeps
+        # those hours from ever being credited.
+        if is_weekend and hours_logged <= 0 and not first_clock_in_str:
+            continue
 
         first_clock_in_dt  = _parse_utc(first_clock_in_str)
         last_clock_out_dt  = _parse_utc(last_clock_out_str)
@@ -138,27 +149,35 @@ def run_for_date(target_date: date):
             and prev_snap.get("leave_type") is None
         )
 
+        # Data-quality and wellbeing checks apply to any worked day, weekend
+        # included — a forgotten clock-out corrupts the hours either way.
         _flag(mid, target_date, "Missing Clock-Out",
               *rules.check_missing_clockout(has_missing_clockout, first_clock_in_dt))
-        _flag(mid, target_date, "Unexcused Absence",
-              *rules.check_unexcused_absence(hours_logged, has_leave, is_holiday))
-        _flag(mid, target_date, "Consecutive Absence",
-              *rules.check_consecutive_absence(is_absent_today, was_absent_prev))
         _flag(mid, target_date, "Excessive Hours",
               *rules.check_excessive_hours(hours_logged, is_full_time))
-        _flag(mid, target_date, "Late / No Start",
-              *rules.check_late_no_start(
-                  first_clock_in_dt, hours_logged, target_date,
-                  has_full_day_leave, has_am_half_day, is_full_time))
-        _flag(mid, target_date, "Long Breaks",
-              *rules.check_long_breaks(
-                  first_clock_in_dt, last_clock_out_dt, hours_logged, is_full_time))
+
+        # Schedule-based rules only make sense on scheduled working days.
+        # Nobody is rostered on a weekend, so voluntary catch-up hours must
+        # never be flagged as absent / late / excessive breaks.
+        if not is_weekend:
+            _flag(mid, target_date, "Unexcused Absence",
+                  *rules.check_unexcused_absence(hours_logged, has_leave, is_holiday))
+            _flag(mid, target_date, "Consecutive Absence",
+                  *rules.check_consecutive_absence(is_absent_today, was_absent_prev))
+            _flag(mid, target_date, "Late / No Start",
+                  *rules.check_late_no_start(
+                      first_clock_in_dt, hours_logged, target_date,
+                      has_full_day_leave, has_am_half_day, is_full_time))
+            _flag(mid, target_date, "Long Breaks",
+                  *rules.check_long_breaks(
+                      first_clock_in_dt, last_clock_out_dt, hours_logged, is_full_time))
         # "Excessive Breaks" and "Early Departure" checks removed as low-signal /
         # high-noise.  Historical anomalies of those types remain in the DB but
         # are filtered out of the dashboard.
 
-    # --- Weekly summary on Fridays ---
-    if target_date.weekday() == 4:
+    # --- Weekly summary: preliminary on Friday, final on Sunday once any
+    # weekend catch-up hours are in (Monday's morning run processes Sunday). ---
+    if target_date.weekday() in (4, 6):
         _run_weekly_summary(target_date, employees)
 
     # --- Admin edits ---
@@ -195,10 +214,18 @@ def _flag(member_id: str, target_date: date, anomaly_type: str, flagged: bool, d
             logger.info(f"  Anomaly resolved: {anomaly_type} — {member_id}")
 
 
-def _run_weekly_summary(friday: date, employees: list[dict]):
+def _run_weekly_summary(anchor_date: date, employees: list[dict]):
+    """Summarise the week containing anchor_date.
+
+    Hours are totalled Mon–Sun so weekend catch-up work counts toward the
+    week, while the target stays based on Mon–Fri (a weekend never raises
+    what someone owes). Runs twice: Friday (preliminary) and Sunday (final).
+    """
     from engine import rules, db
-    monday = friday - timedelta(days=4)
-    logger.info(f"Weekly summary: {monday} to {friday}")
+    monday = anchor_date - timedelta(days=anchor_date.weekday())
+    friday = monday + timedelta(days=4)
+    sunday = monday + timedelta(days=6)
+    logger.info(f"Weekly summary: {monday} to {sunday}")
 
     for emp in employees:
         mid       = emp["member_id"]
@@ -213,7 +240,8 @@ def _run_weekly_summary(friday: date, employees: list[dict]):
         if active_days == 0:
             continue
 
-        snapshots = db.get_snapshots_for_week(mid, monday, friday)
+        # Mon–Sun window: weekend hours count toward the week's total.
+        snapshots = db.get_snapshots_for_week(mid, monday, sunday)
 
         total_hours      = sum(float(s["hours_logged"]) for s in snapshots)
         leave_days       = sum(1 for s in snapshots if s.get("leave_type") is not None)
@@ -227,7 +255,7 @@ def _run_weekly_summary(friday: date, employees: list[dict]):
         db.upsert_weekly_summary({
             "member_id":        mid,
             "week_start":       monday.isoformat(),
-            "week_end":         friday.isoformat(),
+            "week_end":         sunday.isoformat(),
             "total_hours":      round(total_hours, 2),
             "leave_days":       leave_days,
             "effective_target": round(effective_target, 2),
@@ -352,17 +380,25 @@ def main():
         target = date.today()
 
     if args.lookback > 0:
-        # Collect the N most-recent working days before target (oldest first)
-        # so weekly summaries are (re)computed in chronological order.
-        past_days: list[date] = []
-        d = target - timedelta(days=1)
-        while len(past_days) < args.lookback:
+        # Walk back N *working* days to find the window start (so --lookback 30
+        # still means ~6 weeks of retroactive-leave healing), then re-sync every
+        # calendar day in that span — weekends included, since catch-up hours
+        # can land on any of them. Oldest first, so weekly summaries are
+        # recomputed in chronological order.
+        oldest      = target - timedelta(days=1)
+        working_cnt = 0
+        d           = target - timedelta(days=1)
+        while working_cnt < args.lookback:
             if d.weekday() < 5:
-                past_days.append(d)
+                working_cnt += 1
+            oldest = d
             d -= timedelta(days=1)
-        for d in reversed(past_days):
-            logger.info(f"Lookback re-sync: {d}")
-            run_for_date(d)
+
+        cur = oldest
+        while cur < target:
+            logger.info(f"Lookback re-sync: {cur}")
+            run_for_date(cur)
+            cur += timedelta(days=1)
 
     run_for_date(target)
 

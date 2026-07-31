@@ -171,8 +171,10 @@ def _compute_range(option: str, offset: int, today: date) -> tuple[date, date, s
         this_monday = today - timedelta(days=today.weekday())
         base_monday = this_monday if option == "This Week" else this_monday - timedelta(days=7)
         monday = base_monday + timedelta(weeks=offset)
-        friday = monday + timedelta(days=4)
-        return monday, min(friday, today), "week"
+        # Mon–Sun, not Mon–Fri: weekend catch-up hours belong to the week they
+        # were worked in. Targets stay Mon–Fri (see _working_days_active).
+        sunday = monday + timedelta(days=6)
+        return monday, min(sunday, today), "week"
 
     if option in ("This Month", "Last Month"):
         if option == "Last Month":
@@ -398,6 +400,19 @@ def _to_ist_str(val) -> str:
     return ts.tz_convert("Asia/Kolkata").strftime("%I:%M %p")
 
 
+def _fmt_map(df: pd.DataFrame, mapping: dict) -> dict:
+    """Drop formatters for absent columns — optional ones like 'Weekend Hrs'
+    only appear in ranges where somebody actually worked a weekend."""
+    return {k: v for k, v in mapping.items() if k in df.columns}
+
+
+def _style_weekend(styled, df: pd.DataFrame):
+    """Tint the optional Weekend Hrs column when it is present."""
+    if "Weekend Hrs" in df.columns:
+        return styled.map(_color_weekend, subset=["Weekend Hrs"])
+    return styled
+
+
 def _csv_button(df: pd.DataFrame, filename: str, key: str):
     """Render a 'Export CSV' download button for the given DataFrame."""
     if df is None or df.empty:
@@ -550,6 +565,10 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     # Leave  = personal leave only (holidays are not tallied as leave).
     df["_excused"]       = df["leave_type"] != ""
     df["_leave"]         = df["_excused"] & ~df["leave_type"].isin(HOLIDAY_LEAVE_TYPES)
+    # Weekend catch-up hours count toward the week's total but never raise the
+    # target — surfaced separately so it's clear where the hours came from.
+    df["_weekend_hrs"]   = df["hours_logged"].where(
+        pd.to_datetime(df["snapshot_date"]).dt.weekday >= 5, 0.0)
 
     # Drop snapshot rows outside each employee's active range
     df = _filter_active_on(df)
@@ -563,6 +582,7 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
         df.groupby("Employee")
         .agg(
             Hours        = ("hours_logged", "sum"),
+            Weekend_Hrs  = ("_weekend_hrs", "sum"),
             Excused_Days = ("_excused", "sum"),
             Leave_Days   = ("_leave",   "sum"),
             weekly_target= ("weekly_target", "first"),
@@ -591,8 +611,11 @@ def load_weekly_summary(week_start: str, week_end: str) -> pd.DataFrame:
     agg["Status"] = agg.apply(_status, axis=1)
     order = {"Deficit": 0, "At Risk": 1, "Met": 2}
     agg = agg.sort_values("Status", key=lambda s: s.map(order))
-    agg = agg.rename(columns={"Leave_Days": "Leave Days"})
-    return agg[["Employee", "Status", "Hours", "Target", "Deficit", "Leave Days"]].reset_index(drop=True)
+    agg = agg.rename(columns={"Leave_Days": "Leave Days", "Weekend_Hrs": "Weekend Hrs"})
+    cols = ["Employee", "Status", "Hours", "Target", "Deficit", "Leave Days"]
+    if agg["Weekend Hrs"].sum() > 0:   # only shown in weeks someone worked one
+        cols.insert(4, "Weekend Hrs")
+    return agg[cols].reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)
@@ -637,14 +660,21 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     # every morning.
     df["hours_logged"] = df["hours_logged"].astype(float)
     snap_dates         = pd.to_datetime(df["snapshot_date"]).dt.date
-    df["_hours_pre"]   = df["hours_logged"].where(snap_dates < today, 0.0)
+    # Only a *scheduled* day in progress is held back from the banked total and
+    # extrapolated instead; weekend catch-up hours are voluntary and always
+    # count in full, including on the day they're worked.
+    _hold_back         = (snap_dates == today) & (today.weekday() < 5)
+    df["_hours_pre"]   = df["hours_logged"].where(~_hold_back, 0.0)
     df["_leave_today"] = df["_excused"] & (snap_dates == today)
+    df["_weekend_hrs"] = df["hours_logged"].where(
+        pd.to_datetime(df["snapshot_date"]).dt.weekday >= 5, 0.0)
 
     agg = (
         df.groupby("Employee")
         .agg(
             Hours        = ("hours_logged", "sum"),
             Hours_Pre    = ("_hours_pre",   "sum"),
+            Weekend_Hrs  = ("_weekend_hrs", "sum"),
             Excused_Days = ("_excused", "sum"),
             Leave_Days   = ("_leave",   "sum"),
             Leave_Today  = ("_leave_today", "max"),
@@ -690,9 +720,12 @@ def load_current_week(monday: str, through: str) -> pd.DataFrame:
     agg["Status"] = agg.apply(_status, axis=1)
     order = {"Deficit": 0, "At Risk": 1, "On Track": 2}
     agg = agg.sort_values("Status", key=lambda s: s.map(order))
-    agg = agg.rename(columns={"Leave_Days": "Leave Days"})
+    agg = agg.rename(columns={"Leave_Days": "Leave Days", "Weekend_Hrs": "Weekend Hrs"})
     # Status first
-    return agg[["Employee", "Status", "Hours", "Target", "Projected", "Leave Days", "Days Left"]].reset_index(drop=True)
+    cols = ["Employee", "Status", "Hours", "Target", "Projected", "Leave Days", "Days Left"]
+    if agg["Weekend Hrs"].sum() > 0:
+        cols.insert(5, "Weekend Hrs")
+    return agg[cols].reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)
@@ -721,6 +754,8 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     # Leave  = personal leave only (holidays are not tallied as leave).
     df["_excused"]     = df["leave_type"] != ""
     df["_leave"]       = df["_excused"] & ~df["leave_type"].isin(HOLIDAY_LEAVE_TYPES)
+    df["_weekend_hrs"] = df["hours_logged"].where(
+        pd.to_datetime(df["snapshot_date"]).dt.weekday >= 5, 0.0)
 
     # Drop snapshot rows outside each employee's active range
     df = _filter_active_on(df)
@@ -746,6 +781,7 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
         df.groupby("Employee")
         .agg(
             Total_Hours  = ("hours_logged", "sum"),
+            Weekend_Hrs  = ("_weekend_hrs", "sum"),
             Days_Present = ("hours_logged", lambda x: (x > 0).sum()),
             Days_Absent  = ("hours_logged", lambda x: ((x == 0) & (df.loc[x.index, "leave_type"] == "")).sum()),
             Excused_Days = ("_excused", "sum"),
@@ -768,8 +804,12 @@ def load_monthly_summary(start: str, end: str) -> pd.DataFrame:
     agg = agg.rename(columns={
         "Total_Hours": "Hours", "Days_Present": "Days Present",
         "Days_Absent": "Days Absent", "Leave_Days": "Leave Days",
+        "Weekend_Hrs": "Weekend Hrs",
     })
-    return agg[["Employee", "Net Hrs", "Hours", "Expected Hrs", "Days Present", "Days Absent", "Leave Days"]].reset_index(drop=True)
+    cols = ["Employee", "Net Hrs", "Hours", "Expected Hrs", "Days Present", "Days Absent", "Leave Days"]
+    if agg["Weekend Hrs"].sum() > 0:
+        cols.insert(4, "Weekend Hrs")
+    return agg[cols].reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)
@@ -923,6 +963,13 @@ def _color_hours(val):
     if h >= 10: return "color:#60a5fa; font-weight:600"
     return ""  # normal range — use theme default so it's readable on both light and dark
 
+def _color_weekend(val):
+    try:
+        h = float(val)
+    except (TypeError, ValueError):
+        return ""
+    return "color:#60a5fa; font-weight:600" if h > 0 else "color:#475569"
+
 def _color_net(val):
     try:
         h = float(val)
@@ -1024,8 +1071,14 @@ with tab1:
     # ── Day view ─────────────────────────────────────────────────────────────
     if gran == "day":
         df = load_daily_snapshot(start_str)
+        is_wknd = start.weekday() >= 5
         if df.empty:
-            if start == today:
+            if is_wknd:
+                st.info(
+                    f"Nobody logged hours on {start.strftime('%A, %d %b %Y')}. "
+                    "Weekends only appear here when someone actually worked."
+                )
+            elif start == today:
                 st.info(
                     f"No snapshot data yet for {start.strftime('%A, %d %b %Y')}. "
                     "The engine's first sync of a new day runs at ~1 PM IST "
@@ -1040,10 +1093,23 @@ with tab1:
                     "and update every engine sync."
                 )
 
-            absent   = df[(df["Total Hours"] == 0) & (df["Leave"] == "")]
+            if is_wknd:
+                st.markdown(
+                    f'<div class="alert alert-blue">🗓️ <b>Weekend — {len(df)} '
+                    f'{"person" if len(df) == 1 else "people"} worked.</b> These hours '
+                    'count toward the week; no one is expected in, so absence and '
+                    'late checks do not apply.</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # On a weekend only people who worked have rows, so "absent" and
+            # "below half-day" would fire against the whole team / against
+            # anyone doing a short catch-up stint. Suppress both.
+            _none    = df.iloc[0:0]
+            absent   = _none if is_wknd else df[(df["Total Hours"] == 0) & (df["Leave"] == "")]
             # Threshold is per-employee (half their daily target) so part-timers
             # aren't flagged against a full-timer's bar.
-            low_hrs  = df[(df["Total Hours"] > 0) & (df["Leave"] == "")
+            low_hrs  = _none if is_wknd else df[(df["Total Hours"] > 0) & (df["Leave"] == "")
                           & (df["Total Hours"] < df["_daily_target"] * 0.5)]
             holiday  = df[df["Leave"].isin(HOLIDAY_LEAVE_TYPES)]
             on_leave = df[(df["Leave"] != "") & (~df["Leave"].isin(HOLIDAY_LEAVE_TYPES))]
@@ -1064,7 +1130,7 @@ with tab1:
             # Active employees with no snapshot row at all — a silent sync gap
             # is easy to miss when someone simply doesn't appear in the table.
             roster = load_employees()
-            if not roster.empty:
+            if not roster.empty and not is_wknd:
                 active_today = {
                     r["display_name"]
                     for _, r in roster.iterrows()
@@ -1076,7 +1142,7 @@ with tab1:
                 if missing:
                     st.markdown(f'<div class="alert alert-blue">❔ <b>No data ({len(missing)}):</b> {", ".join(missing)}</div>', unsafe_allow_html=True)
 
-            if absent.empty and low_hrs.empty:
+            if absent.empty and low_hrs.empty and not is_wknd:
                 st.markdown('<div class="alert alert-green">✅ No attendance issues.</div>', unsafe_allow_html=True)
 
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -1133,10 +1199,12 @@ with tab1:
                 c3.metric("Deficit",  int((df["Status"] == "Deficit").sum()))
 
                 st.markdown("&nbsp;", unsafe_allow_html=True)
-                styled = (
+                styled = _style_weekend(
                     df.style
                     .map(_color_status, subset=["Status"])
-                    .format({"Hours": _fmt_hrs, "Target": _fmt_hrs, "Projected": _fmt_hrs})
+                    .format(_fmt_map(df, {"Hours": _fmt_hrs, "Target": _fmt_hrs,
+                                          "Projected": _fmt_hrs, "Weekend Hrs": _fmt_hrs})),
+                    df,
                 )
                 st.dataframe(styled, use_container_width=True, hide_index=True)
                 _csv_button(df, f"week_{start_str}.csv", key="att_curweek_csv")
@@ -1167,11 +1235,13 @@ with tab1:
                 c3.metric("Deficit", int((df["Status"] == "Deficit").sum()))
 
                 st.markdown("&nbsp;", unsafe_allow_html=True)
-                styled = (
+                styled = _style_weekend(
                     df.style
                     .map(_color_status,  subset=["Status"])
                     .map(_color_deficit, subset=["Deficit"])
-                    .format({"Hours": _fmt_hrs, "Target": _fmt_hrs, "Deficit": _fmt_hrs})
+                    .format(_fmt_map(df, {"Hours": _fmt_hrs, "Target": _fmt_hrs,
+                                          "Deficit": _fmt_hrs, "Weekend Hrs": _fmt_hrs})),
+                    df,
                 )
                 st.dataframe(styled, use_container_width=True, hide_index=True)
                 _csv_button(df, f"week_{start_str}.csv", key="att_pastweek_csv")
@@ -1213,12 +1283,14 @@ with tab1:
             c3.metric("Team Net vs Expected", _fmt_hrs_signed(df["Net Hrs"].sum()))
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
-            styled = (
+            styled = _style_weekend(
                 df.style
                 .map(_color_net,    subset=["Net Hrs"])
                 .map(_color_absent, subset=["Days Absent"])
                 .map(_heat_count,   subset=["Lates", "Anomalies"])
-                .format({"Hours": _fmt_hrs, "Expected Hrs": _fmt_hrs, "Net Hrs": _fmt_hrs_signed})
+                .format(_fmt_map(df, {"Hours": _fmt_hrs, "Expected Hrs": _fmt_hrs,
+                                      "Net Hrs": _fmt_hrs_signed, "Weekend Hrs": _fmt_hrs})),
+                df,
             )
             st.dataframe(styled, use_container_width=True, hide_index=True)
             _csv_button(df, f"range_{start_str}_to_{end_str}.csv", key="att_month_csv")
@@ -1351,6 +1423,13 @@ with tab4:
             c4.metric("Leaves",    personal)
             c5.metric("Lates",     lates)
             c6.metric("Anomalies", 0 if my_ano.empty else len(my_ano))
+
+            wknd_hrs = float(base[pd.to_datetime(base["Date"]).dt.weekday >= 5]["Hours"].sum())
+            if wknd_hrs > 0:
+                st.caption(
+                    f"🗓️ Includes {_fmt_hrs(wknd_hrs)} worked on weekends — counted "
+                    "toward Hours, while Expected stays based on weekdays."
+                )
 
             # Weekly trend — only meaningful when the range spans 2+ weeks
             wk_dates = pd.to_datetime(ddf["Date"]).dt.date

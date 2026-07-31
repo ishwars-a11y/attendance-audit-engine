@@ -118,6 +118,16 @@ To enable this, run the engine twice daily (e.g. add a second cron at 1 PM IST) 
 
 ---
 
+## Weekends
+
+People sometimes work Sat/Sun to make up weekday hours, so weekends **are** processed:
+
+- A weekend snapshot is written **only if hours were actually logged** — no zero-hour rows for days nobody was expected in.
+- Weekend hours count toward **weekly and monthly totals** (the weekly window is Mon–Sun), and are surfaced in a **Weekend Hrs** column that appears only in ranges where someone worked one.
+- Targets stay based on **Mon–Fri**: a weekend never increases what someone owes, it only helps them reach it.
+- Schedule-based anomalies (Unexcused Absence, Consecutive Absence, Late / No Start, Long Breaks) are **not** run on weekends. Missing Clock-Out and Excessive Hours still are — a forgotten clock-out corrupts the hours on any day.
+- The weekly summary runs twice: **Friday** (preliminary) and **Sunday** (final, once weekend hours are in). Monday's morning run processes Sunday, so a Weekly Deficit flagged on Friday is automatically cleared if the weekend closed the gap.
+
 ## Notes
 
 - **Friday missing clock-outs** are detected at 11 PM Friday. They appear on the dashboard Monday morning (next working day Ishwar checks).
