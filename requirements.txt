@@ -2,5 +2,18 @@ requests>=2.31.0
 supabase>=2.3.0
 python-dotenv>=1.0.0
 pytz>=2024.1
-streamlit>=1.35.0
-pandas>=2.0.0
+pandas>=2.0.0,<4
+
+# --- Pinned deliberately. Do not loosen without testing the app boots. ---
+# Streamlit's MediaAwareGZipMiddleware instantiates Starlette's GZipResponder
+# as (app, minimum_size, compresslevel=...). Starlette added a REQUIRED
+# keyword-only `thread_minimum_size` argument in a release after 1.0.0, so
+# every HTTP request dies in middleware before the app runs:
+#     TypeError: GZipResponder.__init__() missing 1 required
+#                keyword-only argument: 'thread_minimum_size'
+# Streamlit has not adopted the new signature (still absent in 1.61.0) and its
+# own metadata allows `starlette<2`, so an unpinned rebuild pulls the broken
+# combination. Hold Starlette at the last compatible release until Streamlit
+# updates the call site, then these two can be unpinned together.
+streamlit==1.57.0
+starlette==1.0.0
